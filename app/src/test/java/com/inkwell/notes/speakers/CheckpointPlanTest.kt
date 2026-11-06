@@ -2,6 +2,7 @@ package com.inkwell.notes.speakers
 
 import com.inkwell.notes.speakers.logic.AudioPlan
 import com.inkwell.notes.speakers.logic.DiarizationCheckpoint
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -35,5 +36,20 @@ class CheckpointPlanTest {
         val c = DiarizationCheckpoint(modelId = "m", files = files, durations = durations, windowsDone = 1)
         val back = DiarizationCheckpoint.decode(DiarizationCheckpoint.encode(c))!!
         assertTrue(back.matches("m", files, durations, windows = AudioPlan.windows(durations, List(3) { true }).size))
+    }
+
+    @Test
+    fun theFailureCountTravelsWithTheCheckpoint() {
+        // Written before failures were counted: none so far, and it still resumes.
+        val old = DiarizationCheckpoint.decode(
+            DiarizationCheckpoint.encode(DiarizationCheckpoint(modelId = "m", files = files, durations = durations, windowsDone = 1))
+                .replace(",\"failures\":0", ""),
+        )!!
+        assertEquals(0, old.failures)
+        assertTrue(old.matches("m", files, durations, windows = 2))
+        val failed = old.copy(failures = 2)
+        val back = DiarizationCheckpoint.decode(DiarizationCheckpoint.encode(failed))!!
+        assertEquals(2, back.failures)
+        assertTrue(back.matches("m", files, durations, windows = 2))
     }
 }

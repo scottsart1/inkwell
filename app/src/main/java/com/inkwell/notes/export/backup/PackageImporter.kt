@@ -7,6 +7,8 @@ import com.inkwell.notes.core.model.DocumentMeta
 import com.inkwell.notes.core.model.PageContent
 import com.inkwell.notes.core.model.RecognizedBlock
 import com.inkwell.notes.core.model.TextSource
+import com.inkwell.notes.core.naming.DateNaming
+import com.inkwell.notes.core.naming.TitleRules
 import com.inkwell.notes.core.storage.PageContentStore
 import com.inkwell.notes.core.storage.db.DocumentEntity
 import com.inkwell.notes.core.storage.db.OutlineEntity
@@ -24,7 +26,7 @@ import java.util.zip.ZipInputStream
 
 /**
  * Imports a native .inkwell package as a new document: fresh ids for the document, pages,
- * recordings and outline (audio anchors follow), title and creation time kept. The package
+ * recordings and outline (audio anchors follow), title (numbered when taken) and creation time kept. The package
  * is unpacked into a staging folder first and validated, so a damaged file never leaves a
  * half-imported document behind.
  */
@@ -35,8 +37,11 @@ internal class PackageImporter(private val graph: AppGraph) {
         try {
             val budget = (graph.files.root.usableSpace - RESERVED_BYTES).coerceAtMost(MAX_PACKAGE_BYTES)
             if (budget <= 0) throw PackageException(PackageException.Reason.NO_SPACE)
+            // When free space sets the limit, running into it means the device is full, not a bad package:
+            // a restore stops there instead of quietly skipping every larger document.
+            val overBudget = if (budget < MAX_PACKAGE_BYTES) PackageException.Reason.NO_SPACE else PackageException.Reason.TOO_LARGE
             val names = try {
-                ZipSafety.extract(ZipInputStream(input), staging, budget)
+                ZipSafety.extract(ZipInputStream(input), staging, budget, overBytes = overBudget)
             } catch (e: PackageException) {
                 throw e
             } catch (e: java.util.zip.ZipException) {
@@ -117,8 +122,11 @@ internal class PackageImporter(private val graph: AppGraph) {
                 lastSyncedAt = 0,
                 modifiedAt = maxOf(m.document.modifiedAt, m.document.createdAt),
             )
-            graph.db.withTransaction {
-                graph.db.documents().insert(DocumentEntity.from(meta))
+            val saved = graph.db.withTransaction {
+                // Titles are unique in the library (synced folders are named after them), so a copy
+                // restored beside its original becomes "Title (2)" like any other duplicate.
+                val unique = meta.copy(title = DateNaming.unique(TitleRules.sanitize(meta.title) ?: DateNaming.UNTITLED, graph.db.documents().titlesExcept(docId)))
+                graph.db.documents().insert(DocumentEntity.from(unique))
                 graph.db.pages().upsertAll(pageMetas.map { (p, pm) ->
                     val textRestored = p.textCurrent && textByPage[p.meta.id].orEmpty().isNotEmpty()
                     PageEntity.from(pm, indexedAt = if (textRestored) maxOf(now, pm.modifiedAt) else 0L)
@@ -130,6 +138,7 @@ internal class PackageImporter(private val graph: AppGraph) {
                         graph.db.transcripts().insertAll(PackagedTranscripts.entities(rec.id, pr.transcript, pr.transcriptSource))
                     }
                 }
+                unique
             }
             committed = true
 
@@ -146,7 +155,7 @@ internal class PackageImporter(private val graph: AppGraph) {
                 if (thumbnail == null) quietly("thumbnail") { graph.thumbnails.refresh(docId) }
                 quietly("sync") { graph.sync.onDocumentChanged(docId) }
             }
-            return meta
+            return saved
         } catch (t: Throwable) {
             if (!committed) withContext(NonCancellable) { files.deleteDocument(docId) }
             throw t

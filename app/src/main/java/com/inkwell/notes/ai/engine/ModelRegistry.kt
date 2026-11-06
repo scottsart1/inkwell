@@ -129,9 +129,13 @@ class ModelRegistry(
 
     private fun withOverride(p: AiProviderId, s: ModelSpec): ModelSpec {
         val o = priceOverride(ModelRef(p, s.id)) ?: return s
+        // The user's prices replace the list prices, including any long-context tier.
         return s.copy(
             inputUsdPerMTok = o.inputUsdPerMTok ?: s.inputUsdPerMTok,
             outputUsdPerMTok = o.outputUsdPerMTok ?: s.outputUsdPerMTok,
+            longContextThresholdTokens = null,
+            longInputUsdPerMTok = null,
+            longOutputUsdPerMTok = null,
         )
     }
 

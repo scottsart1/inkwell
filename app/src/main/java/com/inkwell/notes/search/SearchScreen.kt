@@ -104,6 +104,9 @@ fun SearchScreen(initialQuery: String, nav: AppNavigator) {
         }
     }
     LaunchedEffect(Unit) {
+        // After process death the field restores its text but the ViewModel starts from the
+        // navigation argument: hand it the text the user sees.
+        if (text != vm.state.value.query) vm.onQueryChange(text)
         // Let the screen settle before focusing so the keyboard opens reliably.
         delay(120)
         runCatching { focus.requestFocus() }

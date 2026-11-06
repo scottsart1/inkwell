@@ -27,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,7 +86,8 @@ fun NotebookPane(
     val graph = remember { AppGraph.get(context) }
     val scope = rememberCoroutineScope()
     val controller = remember(docId) { NotebookController(graph, docId, context, initialPage, scope) }
-    val ui = remember(docId) { PaneUiState() }
+    // Saved: a photo taken after the process was killed must still find its file and place.
+    val ui = rememberSaveable(docId, saver = PaneUiState.CameraSaver) { PaneUiState() }
     val settings by graph.settings.settings.collectAsStateWithLifecycle()
     val recState by graph.recording.state.collectAsStateWithLifecycle()
     val recordingHere = (recState as? RecordingState.Active)?.docId == docId
@@ -325,10 +327,26 @@ private fun CanvasArea(
         controller.longPress?.let { req -> LongPressMenu(controller, req, actions) }
 
         if (textEdit != null) {
-            TextEditOverlay(textEdit) { text, config -> actions.commitText(textEdit, text, config) }
+            TextEditOverlay(
+                textEdit,
+                onDraft = { text, config -> controller.onTextDraft(textEdit, text, config) },
+            ) { text, config -> actions.commitText(textEdit, text, config) }
         }
 
         if (ui.focusMode && mode == PaneMode.FULL) FocusModeExits(onExit = { ui.focusMode = false })
+
+        if (controller.inputLocked) {
+            // Swallows pen and touch above the canvas and toolbar while pages move to another document.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) awaitPointerEvent().changes.forEach { it.consume() }
+                        }
+                    },
+            )
+        }
     }
 }
 

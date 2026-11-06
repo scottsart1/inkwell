@@ -22,11 +22,13 @@ import com.inkwell.notes.core.storage.db.FolderEntity
 import com.inkwell.notes.core.storage.db.OutlineEntity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /**
@@ -104,7 +106,7 @@ class LibraryRepositoryImpl internal constructor(
             db.folders().upsert(next)
             if (name != cur.name || parentId != cur.parentId) docsInSubtree(tree, folder.id) else emptyList()
         }
-        affectedDocs.forEach { hooks.documentMetaChanged(it) }
+        affectedDocs.forEach { hooks.documentMoved(it) }
     }
 
     override suspend fun moveFolder(id: String, newParentId: String?) {
@@ -122,7 +124,7 @@ class LibraryRepositoryImpl internal constructor(
             db.folders().upsert(cur.copy(parentId = newParentId, name = uniqueSiblingName(cur.name, newParentId, id), modifiedAt = now))
             docsInSubtree(tree, id)
         }
-        affectedDocs.forEach { hooks.documentMetaChanged(it) }
+        affectedDocs.forEach { hooks.documentMoved(it) }
     }
 
     override suspend fun trashFolder(id: String) {
@@ -143,9 +145,9 @@ class LibraryRepositoryImpl internal constructor(
     }
 
     override suspend fun restoreFolder(id: String) {
-        db.withTransaction {
+        val affectedDocs = db.withTransaction {
             val tree = FolderTree(db.folders().getAllIncludingTrashed().map { it.toModel() })
-            val root = tree[id] ?: return@withTransaction
+            val root = tree[id] ?: return@withTransaction emptyList()
             val stamp = root.trashedAt
             if (stamp != null) {
                 // Restore what was trashed together with this folder; items trashed separately stay in the trash.
@@ -158,8 +160,17 @@ class LibraryRepositoryImpl internal constructor(
                     .filter { it.folderId != null && it.folderId in subtree && it.trashedAt == stamp }
                     .forEach { db.documents().update(it.copy(trashedAt = null)) }
             }
-            ensureFolderChainLive(root.parentId, childId = id)
+            val renamed = HashSet<String>()
+            ensureFolderChainLive(root.parentId, childId = id, renamed = renamed)
+            // A folder with its name may have been created at its level while it was in the trash.
+            db.folders().get(id)?.takeIf { it.trashedAt == null }?.let { cur ->
+                val next = withUniqueName(cur, renamed)
+                if (next != cur) db.folders().upsert(next)
+            }
+            docsInRenamedFolders(renamed)
         }
+        // Their folder path changed: sync moves their copies too.
+        affectedDocs.forEach { hooks.documentMoved(it) }
     }
 
     override suspend fun folderPath(folderId: String?): String {
@@ -184,15 +195,34 @@ class LibraryRepositoryImpl internal constructor(
     }
 
     /**
-     * Makes [folderId] and its ancestors visible again (restoring trashed ones, re-rooting below a
-     * missing parent). Returns [folderId] if it exists, null otherwise. Runs inside a transaction.
+     * [f] with a name none of its live siblings has (a folder revived or moved to the top level may
+     * clash with one created meanwhile); adds its id to [renamed] when the name changes.
      */
-    private suspend fun ensureFolderChainLive(folderId: String?, childId: String? = null): String? {
+    private suspend fun withUniqueName(f: FolderEntity, renamed: MutableSet<String>?): FolderEntity {
+        val name = uniqueSiblingName(f.name, f.parentId, f.id)
+        if (name == f.name) return f
+        renamed?.add(f.id)
+        return f.copy(name = name)
+    }
+
+    /** Documents whose folder path changed because the folders in [renamed] got a new name. */
+    private suspend fun docsInRenamedFolders(renamed: Set<String>): List<String> {
+        if (renamed.isEmpty()) return emptyList()
+        val tree = FolderTree(db.folders().getAllIncludingTrashed().map { it.toModel() })
+        return renamed.flatMap { docsInSubtree(tree, it) }.distinct()
+    }
+
+    /**
+     * Makes [folderId] and its ancestors visible again (restoring trashed ones, re-rooting below a
+     * missing parent, renaming them if a live sibling took their name meanwhile; their ids go to
+     * [renamed]). Returns [folderId] if it exists, null otherwise. Runs inside a transaction.
+     */
+    private suspend fun ensureFolderChainLive(folderId: String?, childId: String? = null, renamed: MutableSet<String>? = null): String? {
         if (folderId == null) return null
         val all = db.folders().getAllIncludingTrashed().associateBy { it.id }
         if (all[folderId] == null) {
             // The parent is gone: the child becomes a top-level folder.
-            childId?.let { all[it] }?.let { db.folders().upsert(it.copy(parentId = null)) }
+            childId?.let { all[it] }?.let { db.folders().upsert(withUniqueName(it.copy(parentId = null), renamed)) }
             return null
         }
         var current = all[folderId]
@@ -202,7 +232,7 @@ class LibraryRepositoryImpl internal constructor(
             var next: FolderEntity = current
             if (current.trashedAt != null) next = next.copy(trashedAt = null)
             if (current.parentId != null && parent == null) next = next.copy(parentId = null)
-            if (next != current) db.folders().upsert(next)
+            if (next != current) db.folders().upsert(withUniqueName(next, renamed))
             current = parent
         }
         return folderId
@@ -324,7 +354,7 @@ class LibraryRepositoryImpl internal constructor(
             db.documents().update(cur.copy(folderId = folderId))
             true
         }
-        if (moved) hooks.documentMetaChanged(id)
+        if (moved) hooks.documentMoved(id)
     }
 
     override suspend fun duplicateDocument(id: String): DocumentMeta {
@@ -416,22 +446,45 @@ class LibraryRepositoryImpl internal constructor(
     }
 
     override suspend fun restoreDocument(id: String) {
-        db.withTransaction {
-            val cur = db.documents().get(id) ?: return@withTransaction
-            if (cur.trashedAt == null) return@withTransaction
+        val affectedDocs = db.withTransaction {
+            val cur = db.documents().get(id) ?: return@withTransaction emptyList()
+            if (cur.trashedAt == null) return@withTransaction emptyList()
             // Return it to its folder (bringing the folder back if needed), or to the root if the folder is gone.
-            val folderId = ensureFolderChainLive(cur.folderId)
+            val renamed = HashSet<String>()
+            val folderId = ensureFolderChainLive(cur.folderId, renamed = renamed)
             db.documents().update(cur.copy(trashedAt = null, folderId = folderId))
+            docsInRenamedFolders(renamed)
         }
+        // Their folder path changed: sync moves their copies too.
+        affectedDocs.forEach { hooks.documentMoved(it) }
     }
 
     override suspend fun deletePermanently(id: String) {
+        deletePermanently(id, onlyIfTrashedBefore = null)
+    }
+
+    /**
+     * With [onlyIfTrashedBefore], deletes the document only while it is still in the trash and was
+     * trashed before that time, checked in the deleting transaction: a document restored while
+     * Empty trash or the purge works through its list stays alive. Returns false if it was skipped.
+     */
+    private suspend fun deletePermanently(id: String, onlyIfTrashedBefore: Long?): Boolean {
+        fun keep(cur: DocumentEntity): Boolean {
+            val trashedAt = cur.trashedAt
+            return onlyIfTrashedBefore != null && (trashedAt == null || trashedAt >= onlyIfTrashedBefore)
+        }
+        if (onlyIfTrashedBefore != null) db.documents().get(id)?.let { if (keep(it)) return false }
         // Journaled first: if the process dies after the rows are gone, the folder is still removed later.
         docFiles.markPendingDelete(id)
+        var skipped = false
         // Read inside the transaction: once the row is gone the cascade has taken the recordings
         // with it, and the speaker service keeps voice data per recording outside the database.
         val recordingIds: List<String>? = db.withTransaction {
-            if (db.documents().get(id) == null) return@withTransaction null
+            val cur = db.documents().get(id) ?: return@withTransaction null
+            if (keep(cur)) {
+                skipped = true
+                return@withTransaction null
+            }
             val recordings = db.recordings().forDocument(id).map { it.id }
             db.chat().threadsForDocument(id).forEach { db.chat().deleteThread(it) }
             db.textIndex().deleteDocument(id)
@@ -440,16 +493,24 @@ class LibraryRepositoryImpl internal constructor(
             db.documents().delete(id)
             recordings
         }
-        docFiles.deleteDocument(id)
-        docFiles.clearPendingDelete(id)
-        if (recordingIds != null) {
-            if (recordingIds.isNotEmpty()) hooks.recordingsDeleted(id, recordingIds)
-            hooks.documentDeleted(id)
+        // Restored meanwhile. The journal entry stays: the purge never removes the folder of a
+        // document whose row exists, and the next deletion of this document clears it.
+        if (skipped) return false
+        // The rows are gone: finish the cleanup even if the caller (a screen) is cancelled now,
+        // or the voice data of the recordings and the sync queue would be left behind.
+        withContext(NonCancellable) {
+            docFiles.deleteDocument(id)
+            docFiles.clearPendingDelete(id)
+            if (recordingIds != null) {
+                if (recordingIds.isNotEmpty()) hooks.recordingsDeleted(id, recordingIds)
+                hooks.documentDeleted(id)
+            }
         }
+        return true
     }
 
     override suspend fun emptyTrash() {
-        for (doc in db.documents().trashed()) deleteQuietly(doc.id)
+        for (doc in db.documents().trashed()) deleteQuietly(doc.id, trashedBefore = Long.MAX_VALUE)
         deleteTrashedFolders(before = null)
     }
 
@@ -463,19 +524,21 @@ class LibraryRepositoryImpl internal constructor(
         val now = clock()
         val cutoff = now - TRASH_RETENTION_MS
         var removed = 0
-        for (doc in db.documents().trashedBefore(cutoff)) if (deleteQuietly(doc.id)) removed++
+        for (doc in db.documents().trashedBefore(cutoff)) if (deleteQuietly(doc.id, trashedBefore = cutoff)) removed++
         deleteTrashedFolders(before = cutoff)
         for (pending in docFiles.pendingDeletes()) {
-            // A row that still exists means the deletion never committed: the document is alive.
-            if (db.documents().get(pending) == null) docFiles.deleteDocument(pending)
-            docFiles.clearPendingDelete(pending)
+            // A row that still exists means the deletion never committed (the document is alive) or
+            // is in progress right now: its entry is left to that deletion, which clears it.
+            if (db.documents().get(pending) == null) {
+                docFiles.deleteDocument(pending)
+                docFiles.clearPendingDelete(pending)
+            }
         }
         return removed
     }
 
-    private suspend fun deleteQuietly(id: String): Boolean = try {
-        deletePermanently(id)
-        true
+    private suspend fun deleteQuietly(id: String, trashedBefore: Long): Boolean = try {
+        deletePermanently(id, onlyIfTrashedBefore = trashedBefore)
     } catch (c: CancellationException) {
         throw c
     } catch (e: Exception) {

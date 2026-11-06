@@ -8,6 +8,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
@@ -48,10 +49,21 @@ data class SyncNeeds(val local: Boolean = false, val network: Boolean = false, v
 
 /** Enqueues [SyncWorker] runs with WorkManager. Never throws. */
 internal class SyncScheduler(private val context: Context) {
+    /** Call off the main thread: it looks at the runs already there. */
     fun schedule(needs: SyncNeeds) {
-        if (needs.local) enqueue(WORK_LOCAL, SyncScope.FOLDER, null, 0)
-        if (needs.network) enqueue(WORK_MAIN, SyncScope.ALL, NetworkType.CONNECTED, 0)
-        if (needs.unmetered) enqueue(WORK_AUDIO, SyncScope.DRIVE_AUDIO, NetworkType.UNMETERED, 0)
+        if (needs.local) runSoon(WORK_LOCAL, SyncScope.FOLDER, null)
+        if (needs.network) runSoon(WORK_MAIN, SyncScope.ALL, NetworkType.CONNECTED)
+        if (needs.unmetered) runSoon(WORK_AUDIO, SyncScope.DRIVE_AUDIO, NetworkType.UNMETERED)
+    }
+
+    private fun runSoon(name: String, scope: SyncScope, network: NetworkType?) {
+        val states = try {
+            WorkManager.getInstance(context).getWorkInfosForUniqueWork(name).get().map { it.state }
+        } catch (e: Exception) {
+            null
+        }
+        val policy = if (states == null) ExistingWorkPolicy.KEEP else policyFor(states) ?: return
+        enqueue(name, scope, network, 0, policy)
     }
 
     /** Drops scheduled background runs (automatic sync switched off); queued items stay for "Sync now". */
@@ -92,5 +104,22 @@ internal class SyncScheduler(private val context: Context) {
         const val WORK_LATER = "inkwell-sync-later"
         const val TAG = "inkwell-sync"
         const val BACKOFF_SECONDS = 30L
+
+        /**
+         * How to ask for a run under a unique name that has work in [states]; null when nothing
+         * is needed. A waiting run (retry backoff, which can grow to hours, or a missing network)
+         * is replaced so new items go now. A run in progress may already have passed the new
+         * items, so another run is queued behind it, once. Replacing a run in backoff does not
+         * retry failed items early: each waits out its own backoff ([SyncEngine.retryDelayMs]).
+         */
+        internal fun policyFor(states: List<WorkInfo.State>): ExistingWorkPolicy? {
+            val running = WorkInfo.State.RUNNING in states
+            val queued = states.any { it == WorkInfo.State.ENQUEUED || it == WorkInfo.State.BLOCKED }
+            return when {
+                running && queued -> null
+                running -> ExistingWorkPolicy.APPEND_OR_REPLACE
+                else -> ExistingWorkPolicy.REPLACE
+            }
+        }
     }
 }

@@ -36,7 +36,9 @@ class AnthropicAdapter : ProviderAdapter {
         m("claude-fable-5-1", "Claude Fable 5.1", 1_000_000, 128_000, 10.0, 50.0),
         m("claude-opus-5", "Claude Opus 5", 1_000_000, 128_000, 5.0, 25.0),
         m("claude-sonnet-5", "Claude Sonnet 5", 1_000_000, 128_000, 2.0, 10.0),
-        m("claude-haiku-5-5", "Claude Haiku 5.5", 1_000_000, 64_000, 0.10, 0.50),
+        // Prompts over 100K input tokens cost $0.50 / $2.50.
+        m("claude-haiku-5-5", "Claude Haiku 5.5", 1_000_000, 64_000, 0.10, 0.50)
+            .copy(longContextThresholdTokens = 100_000, longInputUsdPerMTok = 0.50, longOutputUsdPerMTok = 2.50),
         m("claude-opus-4-8", "Claude Opus 4.8", 1_000_000, 128_000, 5.0, 25.0),
         m("claude-sonnet-4-6", "Claude Sonnet 4.6", 1_000_000, 64_000, 3.0, 15.0),
         m("claude-haiku-4-5", "Claude Haiku 4.5", 200_000, 64_000, 1.0, 5.0),
@@ -126,6 +128,8 @@ class AnthropicAdapter : ProviderAdapter {
 
     fun usesFallbacks(call: ChatCall): Boolean = call.officialEndpoint && call.model.id in FALLBACK_MODELS
 
+    override fun mayServeOtherModel(call: ChatCall): Boolean = usesFallbacks(call)
+
     override fun chatRequest(call: ChatCall): Request {
         val bytes = LenientJson.encodeToString(JsonObject.serializer(), chatBody(call)).encodeToByteArray()
         return headers(Request.Builder().url("${call.baseUrl}/messages"), call.apiKey)
@@ -212,9 +216,13 @@ class AnthropicStreamDecoder : StreamDecoder {
         val json = parseObject(event.data) ?: return emptyList()
         return when (json["type"].str() ?: event.event) {
             "message_start" -> {
-                val u = json["message"].obj()?.get("usage").obj() ?: return emptyList()
+                val message = json["message"].obj()
+                // With server-side fallbacks this names the model that serves the response.
+                val served = message?.get("model").str()
+                val u = message?.get("usage").obj()
+                    ?: return served?.let { listOf(StreamPart.Usage(null, null, model = it)) } ?: emptyList()
                 inputTokens = sumInput(u)
-                listOf(StreamPart.Usage(inputTokens, null))
+                listOf(StreamPart.Usage(inputTokens, null, model = served, iterations = iterations(u)))
             }
             "content_block_start" -> {
                 val idx = json["index"].int() ?: 0
@@ -238,13 +246,15 @@ class AnthropicStreamDecoder : StreamDecoder {
                 }
                 json["usage"].obj()?.let { u ->
                     val input = sumInput(u)?.takeIf { it > 0 } ?: inputTokens
-                    add(StreamPart.Usage(input, u["output_tokens"].int()))
+                    add(StreamPart.Usage(input, u["output_tokens"].int(), iterations = iterations(u)))
                 }
             }
             "message_stop" -> listOf(StreamPart.End)
             // Non-streamed response (a gateway that ignored `stream: true`).
             "message" -> buildList {
-                json["usage"].obj()?.let { u -> add(StreamPart.Usage(sumInput(u), u["output_tokens"].int())) }
+                json["usage"].obj()?.let { u ->
+                    add(StreamPart.Usage(sumInput(u), u["output_tokens"].int(), model = json["model"].str(), iterations = iterations(u)))
+                }
                 json["content"].arr()?.mapNotNull { it.obj() }?.filter { it["type"].str() == "text" }?.forEach { b ->
                     b["text"].str()?.takeIf { it.isNotEmpty() }?.let { add(StreamPart.Text(it)) }
                 }
@@ -263,6 +273,12 @@ class AnthropicStreamDecoder : StreamDecoder {
         val base = u["input_tokens"].int() ?: return null
         return base + (u["cache_creation_input_tokens"].int() ?: 0) + (u["cache_read_input_tokens"].int() ?: 0)
     }
+
+    /** `usage.iterations`: one entry per attempt; top-level usage covers only the attempt that answered. */
+    private fun iterations(u: JsonObject): List<UsageIteration>? =
+        u["iterations"].arr()?.mapNotNull { it.obj() }?.map { i ->
+            UsageIteration(i["type"].str(), i["model"].str(), sumInput(i) ?: 0, i["output_tokens"].int() ?: 0)
+        }?.takeIf { it.isNotEmpty() }
 
     companion object {
         fun mapStop(r: String): StopReason = when (r) {

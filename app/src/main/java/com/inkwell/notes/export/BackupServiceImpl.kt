@@ -15,7 +15,9 @@ class BackupServiceImpl(private val graph: AppGraph) : BackupService {
     override suspend fun backupTo(treeOrFileUri: Uri, includeAudio: Boolean): BackupReport =
         engine.backupTo(treeOrFileUri, includeAudio)
 
-    override suspend fun restoreFrom(uri: Uri): Int = engine.restoreFrom(uri)
+    override suspend fun restoreFrom(uri: Uri): Int = engine.restoreFrom(uri).documents
+
+    override suspend fun restoreWithReport(uri: Uri): RestoreReport = engine.restoreFrom(uri)
 
     override fun scheduleAutomatic(treeUri: Uri?, intervalDays: Int) {
         AutoBackup.schedule(graph.context, treeUri, intervalDays)

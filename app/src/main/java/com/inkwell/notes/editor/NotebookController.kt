@@ -106,8 +106,12 @@ class NotebookController(
     var bound by mutableStateOf(false); private set
 
     var textEdit by mutableStateOf<TextEditRequest?>(null)
+    /** What the open [textEdit] overlay holds now, so leaving the editor does not lose it. */
+    private var textDraft: Triple<TextEditRequest, String, TextConfig>? = null
     var longPress by mutableStateOf<LongPressRequest?>(null)
     var imagePlacement by mutableStateOf<ImagePlacement?>(null)
+    /** True while pages are being moved out of this document (split): the canvas takes no input. */
+    var inputLocked by mutableStateOf(false)
 
     private var disposed = false
     private var docSeen = false
@@ -203,7 +207,7 @@ class NotebookController(
     override suspend fun loadContent(page: PageMeta): PageContent {
         saver.latest(page.id)?.let { return it.content }
         return try {
-            graph.pageStore.load(docId, page.id).also { unreadablePages.remove(page.id) }
+            graph.pageStore.load(docId, page.id, strict = true).also { unreadablePages.remove(page.id) }
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
             Log.e(TAG, "Loading page ${page.id} failed: ${t.javaClass.simpleName}")
@@ -283,6 +287,37 @@ class NotebookController(
         val sticky = canvas.pageContent(index)?.stickies?.firstOrNull { it.id == itemId } ?: return
         val scale = if (sticky.width > 0f && viewRect.width() > 0f) viewRect.width() / sticky.width else estimatePxPerPt()
         textEdit = TextEditRequest(pageId, index, itemId, sticky.x, sticky.y, RectF(viewRect), sticky.text, tools.state.text, scale, sticky = true)
+    }
+
+    /** The text overlay reports every change, so a pane closed without Done still commits it. */
+    fun onTextDraft(req: TextEditRequest, text: String, config: TextConfig) {
+        textDraft = Triple(req, text, config)
+    }
+
+    /** Closes the text overlay and applies [text] to the box (or sticky) it was editing. */
+    fun commitText(req: TextEditRequest, text: String, config: TextConfig) {
+        textEdit = null
+        textDraft = null
+        when {
+            req.sticky -> req.itemId?.let { canvas.updateSticky(ItemRef(req.pageId, it, ItemType.STICKY), text) }
+            req.itemId == null -> if (text.isNotBlank()) canvas.insertText(req.pageIndex, text, PointF(req.pageX, req.pageY), config, req.origin)
+            text.isBlank() -> {
+                canvas.selectItems(req.pageId, listOf(req.itemId))
+                canvas.deleteSelection()
+            }
+            else -> canvas.updateText(ItemRef(req.pageId, req.itemId, ItemType.TEXT), text, config)
+        }
+        // Only a format the user chose in the overlay becomes the text tool's default; fixing a
+        // typo in an old 24pt red box must not turn every new box 24pt red.
+        if (!req.sticky && config != req.config && config != tools.state.text) updateTools(tools.updateText { config })
+    }
+
+    /** Commits what is typed in a still-open text overlay (the app is stopped or the pane closes). */
+    private fun commitPendingText() {
+        val req = textEdit ?: return
+        val (draftReq, text, config) = textDraft ?: return
+        if (draftReq !== req || (text == req.initialText && config == req.config)) return
+        commitText(req, text, config)
     }
 
     override fun onImagePlacementRequested(pageIndex: Int, pageX: Float, pageY: Float) {
@@ -474,6 +509,7 @@ class NotebookController(
 
     fun onStop() {
         if (disposed) return
+        if (bound) runCatching { commitPendingText() }.onFailure { Log.e(TAG, "Text commit on stop failed", it) }
         saver.flushAll()
         toolSaveJob?.cancel()
         saveToolsNow()
@@ -492,6 +528,7 @@ class NotebookController(
     fun dispose() {
         if (disposed) return
         val wasBound = bound
+        if (wasBound) runCatching { commitPendingText() }.onFailure { Log.e(TAG, "Text commit on close failed", it) }
         if (wasBound) runCatching { canvas.flush() }.onFailure { Log.e(TAG, "Flush on close failed", it) }
         disposed = true
         val flushed = saver.flushAll()

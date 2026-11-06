@@ -68,6 +68,11 @@ class PlaybackControllerImpl(private val graph: AppGraph) : PlaybackController {
             }
         }
 
+        // Paused or let go while held back (see isHeld) without isPlaying changing: idle again.
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) = scheduleIdleRelease()
+
+        override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) = scheduleIdleRelease()
+
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
             _state.update { it.copy(positionMs = currentGlobal()) }
         }
@@ -120,7 +125,10 @@ class PlaybackControllerImpl(private val graph: AppGraph) : PlaybackController {
             }
             val p = ensurePlayer()
             val target = _state.value.positionMs
-            val item = timeline.locateItem(target) ?: SegmentTimeline.Position(0, 0)
+            // Play at the end (the player was freed after it ended): start over, as play() does.
+            val restart = pendingPlay && target >= timeline.totalMs
+            val item = timeline.locateItem(if (restart) 0L else target) ?: SegmentTimeline.Position(0, 0)
+            if (restart) _state.update { it.copy(positionMs = timeline.globalOfItem(item.index, item.offsetMs)) }
             p.setMediaItems(playable.map { MediaItem.fromUri(Uri.fromFile(files[it])) }, item.index, item.offsetMs)
             p.setPlaybackSpeed(_state.value.speed)
             p.prepare()
@@ -255,15 +263,22 @@ class PlaybackControllerImpl(private val graph: AppGraph) : PlaybackController {
     /** Frees the decoder and audio session after a while without playback. */
     private fun scheduleIdleRelease() {
         idleRelease?.cancel()
-        if (player?.isPlaying == true) return
+        if (player?.let { it.isPlaying || isHeld(it) } == true) return
         idleRelease = scope.launch {
             delay(IDLE_RELEASE_MS)
-            if (player?.isPlaying != true) {
-                _state.update { it.copy(positionMs = currentGlobal(), playing = false) }
+            val p = player
+            if (p == null || (!p.isPlaying && !isHeld(p))) {
+                // An ended player reports the end of its last file: keep "at the end" so play() starts over.
+                val ended = p?.playbackState == Player.STATE_ENDED
+                _state.update { it.copy(positionMs = if (ended) timeline.totalMs else currentGlobal(), playing = false) }
                 releasePlayer()
             }
         }
     }
+
+    /** Meant to play but held back (a call took audio focus): it resumes by itself, so keep it. */
+    private fun isHeld(p: ExoPlayer): Boolean =
+        p.playWhenReady && p.playbackSuppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE
 
     private inline fun onMain(crossinline block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post { block() }

@@ -27,7 +27,8 @@ import kotlin.math.min
  * Paginates a typed document onto A4 pages (in points) with Android text layout, so the
  * same pages feed the PDF export (android.graphics.pdf.PdfDocument keeps real, selectable
  * text), PNG/JPEG export, thumbnails and AI snapshots. Long paragraphs and code split
- * between lines; table rows and images move to the next page whole.
+ * between lines; table rows and images move to the next page whole (a row taller than a
+ * page is split between its lines).
  */
 internal class TypedLayout(
     context: Context,
@@ -205,24 +206,41 @@ internal class TypedLayout(
                 val txt = row.getOrNull(c).orEmpty().ifEmpty { " " }
                 StaticLayout.Builder.obtain(txt, 0, txt.length, p, max(1, (colW - 2 * pad).toInt())).setIncludePad(false).build()
             }
-            val rowH = layouts.maxOf { it.height } + 2 * pad
-            ensure(rowH)
-            val top = y
-            placed += Placed(page, top) { c, t ->
-                if (header) c.drawRect(margin, t, margin + contentW, t + rowH, fillPaint(CODE_BG))
-                layouts.forEachIndexed { i, l ->
-                    c.save()
-                    c.translate(margin + i * colW + pad, t + pad)
-                    l.draw(c)
-                    c.restore()
+            val contentH = layouts.maxOf { it.height }.toFloat()
+            if (contentH + 2 * pad <= bottomLimit - margin) {
+                ensure(contentH + 2 * pad)
+                placeRow(layouts, header, cols, colW, pad, 0f, contentH)
+            } else {
+                // A row taller than a page continues on the next pages, cut between lines of its tallest cell.
+                if (y > margin + 0.5f) newPage()
+                val tallest = layouts.maxBy { it.height }
+                val bottoms = (0 until tallest.lineCount).map { tallest.getLineBottom(it).toFloat() }
+                RowSlices.of(contentH, bottoms, bottomLimit - margin - 2 * pad).forEachIndexed { i, (from, end) ->
+                    if (i > 0) newPage()
+                    placeRow(layouts, header, cols, colW, pad, from, end - from)
                 }
-                val lp = linePaint(RULE, 0.5f)
-                c.drawRect(margin, t, margin + contentW, t + rowH, lp)
-                for (i in 1 until cols) c.drawLine(margin + i * colW, t, margin + i * colW, t + rowH, lp)
             }
-            y += rowH
         }
         y += 9f
+    }
+
+    /** Places the cells' text from [from] to [from] + [h] as one bordered table row. */
+    private fun placeRow(layouts: List<StaticLayout>, header: Boolean, cols: Int, colW: Float, pad: Float, from: Float, h: Float) {
+        val rowH = h + 2 * pad
+        placed += Placed(page, y) { c, t ->
+            if (header) c.drawRect(margin, t, margin + contentW, t + rowH, fillPaint(CODE_BG))
+            layouts.forEachIndexed { i, l ->
+                c.save()
+                c.clipRect(margin + i * colW, t + pad, margin + (i + 1) * colW, t + pad + h)
+                c.translate(margin + i * colW + pad, t + pad - from)
+                l.draw(c)
+                c.restore()
+            }
+            val lp = linePaint(RULE, 0.5f)
+            c.drawRect(margin, t, margin + contentW, t + rowH, lp)
+            for (i in 1 until cols) c.drawLine(margin + i * colW, t, margin + i * colW, t + rowH, lp)
+        }
+        y += rowH
     }
 
     private fun image(b: ExportBlock.Image) {
@@ -357,5 +375,33 @@ internal class TypedLayout(
 
         private fun font(context: Context, res: Int, fallback: Typeface): Typeface =
             runCatching { ResourcesCompat.getFont(context, res) }.getOrNull() ?: fallback
+    }
+}
+
+/** Splits a table row taller than a page into page-sized parts. */
+internal object RowSlices {
+    /**
+     * Ranges (from, to) of a row's [contentH] of text, each at most [avail] tall and ending at
+     * one of [lineBottoms] (ascending) when a line ends inside it, so lines are not cut in half.
+     */
+    fun of(contentH: Float, lineBottoms: List<Float>, avail: Float): List<Pair<Float, Float>> {
+        if (avail <= 0f) return listOf(0f to contentH)
+        val out = ArrayList<Pair<Float, Float>>()
+        var from = 0f
+        while (from < contentH) {
+            val limit = from + avail
+            var end = contentH
+            if (limit < contentH) {
+                end = from
+                for (b in lineBottoms) {
+                    if (b > limit) break
+                    if (b > from) end = b
+                }
+                if (end <= from) end = limit // a single line taller than a page: cut it
+            }
+            out += from to end
+            from = end
+        }
+        return out
     }
 }

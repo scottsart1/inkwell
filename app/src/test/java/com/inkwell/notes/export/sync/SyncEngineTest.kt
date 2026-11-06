@@ -325,6 +325,7 @@ class SyncEngineTest {
         val h = harness(drivePrefs.copy(notesFormat = NotesExportFormat.MARKDOWN))
         h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
         repeat(SyncEngine.MAX_ATTEMPTS - 1) { i ->
+            if (i > 0) h.now += SyncEngine.retryDelayMs(i)
             cloud.failNext += DriveException.Server(503)
             val report = h.engine.run()
             assertTrue(report.retryLater)
@@ -333,6 +334,7 @@ class SyncEngineTest {
             assertEquals(i + 1, row.attempts)
             assertTrue(row.lastError!!.contains("HTTP 503"))
         }
+        h.now += SyncEngine.retryDelayMs(SyncEngine.MAX_ATTEMPTS - 1)
         cloud.failNext += DriveException.Server(503)
         h.engine.run()
         assertEquals(SyncItemStatus.FAILED, h.dao.all.single().status)
@@ -347,6 +349,51 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `runs kicked during an item's retry backoff neither send it nor use up its attempts`() = runBlocking {
+        val h = harness(drivePrefs.copy(notesFormat = NotesExportFormat.MARKDOWN))
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        cloud.failNext += DriveException.Server(503)
+        h.engine.run()
+        assertEquals(1, h.dao.all.single().attempts)
+        val sent = cloud.calls.size
+
+        // Edits settling, recordings and settings changes kick runs again and again during the outage.
+        repeat(20) {
+            h.now += 1_000
+            val report = h.engine.run()
+            assertTrue("the run comes back for the waiting item", report.retryLater)
+            assertEquals(1, report.deferred)
+            assertTrue("the outage stays shown while the item waits", h.state.lastError!!.contains("HTTP 503"))
+        }
+        assertEquals(1, h.dao.all.single().attempts)
+        assertEquals(SyncItemStatus.PENDING, h.dao.all.single().status)
+        assertEquals("nothing is sent while the item waits", sent, cloud.calls.size)
+
+        // "Sync now" does not wait: the user asked.
+        cloud.failNext += DriveException.Server(503)
+        h.engine.run(ignoreBackoff = true)
+        assertEquals(2, h.dao.all.single().attempts)
+        h.now += SyncEngine.retryDelayMs(2) - 1
+        h.engine.run()
+        assertEquals("the longer second backoff is waited out too", 2, h.dao.all.single().attempts)
+
+        h.now += 1
+        val report = h.engine.run()
+        assertNull(report.error, report.error)
+        assertNull("the copy went through: the error is cleared", h.state.lastError)
+        assertEquals(SyncItemStatus.DONE, h.dao.all.single().status)
+    }
+
+    @Test
+    fun `retry backoff doubles per attempt and is capped`() {
+        assertEquals(30_000L, SyncEngine.retryDelayMs(1))
+        assertEquals(60_000L, SyncEngine.retryDelayMs(2))
+        assertEquals(30_000L shl 6, SyncEngine.retryDelayMs(SyncEngine.MAX_ATTEMPTS - 1))
+        assertEquals(3_600_000L, SyncEngine.retryDelayMs(50))
+        assertEquals(30_000L, SyncEngine.retryDelayMs(0))
+    }
+
+    @Test
     fun `export failures retry, unimplemented exports fail`() = runBlocking {
         val h = harness(folderPrefs)
         h.source.failExport = IOException("render failed")
@@ -357,6 +404,7 @@ class SyncEngineTest {
         assertTrue(r1.error!!.contains(d.title))
 
         h.source.failExport = NotImplementedError()
+        h.now += SyncEngine.retryDelayMs(1)
         val r2 = h.engine.run()
         assertEquals(1, r2.failed)
         assertEquals(SyncItemStatus.FAILED, h.dao.all.single().status)

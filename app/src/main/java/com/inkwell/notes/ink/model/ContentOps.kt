@@ -80,6 +80,15 @@ object ContentOps {
         return if (m == Int.MAX_VALUE) 0 else m
     }
 
+    /**
+     * Renumbers [items]' z values to [base], [base] + 1, ... by distinct z, keeping their relative
+     * stacking (and equal-z ties, such as an image under the strokes of its own z).
+     */
+    fun stackFrom(items: List<Any>, base: Int): List<Any> {
+        val zMap = items.map { Items.z(it) }.distinct().sorted().withIndex().associate { (k, z) -> z to base + k }
+        return items.map { Items.withZ(it, zMap.getValue(Items.z(it))) }
+    }
+
     /** Removes items by id. Returns the same instance when nothing matched. */
     fun remove(content: PageContent, ids: Set<String>): PageContent {
         if (ids.isEmpty()) return content

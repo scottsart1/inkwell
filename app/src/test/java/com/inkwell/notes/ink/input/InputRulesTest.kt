@@ -35,6 +35,29 @@ class InputRulesTest {
         assertTrue(InputRouter.allowsStylusLongPress(ToolType.TEXT, isInking = false))
     }
 
+    @Test fun releasingHoldToLassoEndsALoop() {
+        // Drawing a lasso loop: releasing the button ends the contact.
+        assertTrue(InputRouter.endsContactOnLassoRelease(ToolType.LASSO, SideButtonMode.HOLD_TO_LASSO, temporaryTool = null))
+        // Button still (or again) held, another mode, or a non-lasso contact: switch tools as usual.
+        assertFalse(InputRouter.endsContactOnLassoRelease(ToolType.LASSO, SideButtonMode.HOLD_TO_LASSO, temporaryTool = ToolType.LASSO))
+        assertFalse(InputRouter.endsContactOnLassoRelease(ToolType.LASSO, SideButtonMode.HOLD_TO_ERASE, temporaryTool = null))
+        assertFalse(InputRouter.endsContactOnLassoRelease(ToolType.PEN, SideButtonMode.HOLD_TO_LASSO, temporaryTool = null))
+        assertFalse(InputRouter.endsContactOnLassoRelease(null, SideButtonMode.HOLD_TO_LASSO, temporaryTool = null))
+    }
+
+    @Test fun sideButtonChangeKeepsARunningSelectionManipulation() {
+        // Moving, resizing or rotating the selection (or a pending tap on it): releasing hold-to-lasso
+        // back to the pen, or pressing it mid-contact, keeps the same manipulation. Restarting it
+        // would ink from a rotate handle the commit moved, or turn one press into a double tap.
+        assertTrue(InputRouter.keepsSelectionManipulation(manipulatingSelection = true, ToolType.PEN))
+        assertTrue(InputRouter.keepsSelectionManipulation(manipulatingSelection = true, ToolType.LASSO))
+        assertTrue(InputRouter.keepsSelectionManipulation(manipulatingSelection = true, ToolType.HIGHLIGHTER))
+        // The eraser never acts on the selection: commit and switch (or end the contact).
+        assertFalse(InputRouter.keepsSelectionManipulation(manipulatingSelection = true, ToolType.ERASER))
+        // Not on the selection: the usual commit-and-switch path.
+        assertFalse(InputRouter.keepsSelectionManipulation(manipulatingSelection = false, ToolType.PEN))
+    }
+
     @Test fun toggleModeDoesNotToggleAgainWhenTheHeldButtonSurvivesALostHover() {
         val sm = StylusButtonStateMachine()
         sm.mode = SideButtonMode.TOGGLE_ERASER

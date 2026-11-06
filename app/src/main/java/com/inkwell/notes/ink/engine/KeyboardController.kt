@@ -108,6 +108,9 @@ internal class KeyboardController(private val e: InkEngine) {
             e.viewportCtl.panBy(-cmd.dx * step, -cmd.dy * step)
             return
         }
+        // The items are lifted off the page during a drag or resize: nudging now would record
+        // them as added by the nudge (undoing it would delete them). Ignore arrows until release.
+        if (e.selection.isManipulating) return
         val h = e.page(i) ?: return
         if (!h.isLoaded || !e.isEditable(i)) return
         // Arrow directions are on screen; convert one screen step into page points.

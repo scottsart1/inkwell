@@ -18,6 +18,7 @@ import com.inkwell.notes.ai.provider.ProviderRegistry
 import com.inkwell.notes.ai.provider.StopReason
 import com.inkwell.notes.ai.provider.StreamPart
 import com.inkwell.notes.ai.provider.TranscriptionParser
+import com.inkwell.notes.ai.provider.UsageIteration
 import com.inkwell.notes.core.model.AiCapability
 import com.inkwell.notes.core.model.AiEvent
 import com.inkwell.notes.core.model.AiException
@@ -98,7 +99,7 @@ private class PrepareException(val failure: AiFailure) : Exception(failure.messa
  * (no Android types) so it is fully unit-testable.
  */
 class AiEngine(
-    private val http: OkHttpClient,
+    http: OkHttpClient,
     private val prefs: () -> AiPrefs,
     private val keys: KeyProvider,
     private val usage: UsageSink,
@@ -113,6 +114,13 @@ class AiEngine(
     /** Replaces providers' official base URLs (tests). Calls still count as "official". */
     private val officialBaseOverride: Map<AiProviderId, String> = emptyMap(),
 ) {
+    /**
+     * Redirects are not followed: on a host change OkHttp strips only `Authorization`, so it would
+     * replay `x-api-key` / `x-goog-api-key` (and, for 307/308, the note content) to the new host.
+     * A 3xx surfaces as a configuration error instead (see [ErrorMapper.http]).
+     */
+    private val http: OkHttpClient = http.newBuilder().followRedirects(false).followSslRedirects(false).build()
+
     // ------------------------------------------------------------------ configuration
 
     fun usable(p: AiProviderId): Boolean = prefs().providerSettings(p).enabled && keys.has(p)
@@ -178,8 +186,11 @@ class AiEngine(
                 .filter { capability in it.capabilities }
         }
 
-    /** Result of an authenticated key check; [rejected] when the provider refused the key itself. */
-    data class KeyCheck(val ok: Boolean, val message: String, val rejected: Boolean)
+    /**
+     * Result of an authenticated key check; [rejected] when the provider refused the key itself,
+     * [authenticated] when the check failed although the provider accepted the key (a 403 on /models).
+     */
+    data class KeyCheck(val ok: Boolean, val message: String, val rejected: Boolean, val authenticated: Boolean = false)
 
     suspend fun checkKey(p: AiProviderId, apiKey: String, baseUrl: String?): KeyCheck {
         val key = apiKey.trim()
@@ -197,7 +208,13 @@ class AiEngine(
         } catch (e: CancellationException) {
             throw e
         } catch (e: FailureException) {
-            KeyCheck(false, e.failure.message, rejected = e.failure.kind == AiFailure.Kind.AUTH || e.failure.kind == AiFailure.Kind.FORBIDDEN)
+            // Only a 401 rejects the key itself. A 403 on /models means it authenticated but may lack the
+            // model-list scope (OpenAI restricted keys) or be region/proxy blocked; chat can still work.
+            KeyCheck(
+                false, e.failure.message,
+                rejected = e.failure.kind == AiFailure.Kind.AUTH,
+                authenticated = e.failure.kind == AiFailure.Kind.FORBIDDEN,
+            )
         } catch (e: Throwable) {
             KeyCheck(false, asAiException(p, e, key).message ?: "Validation failed.", rejected = false)
         }
@@ -368,18 +385,23 @@ class AiEngine(
         var inTokens: Int? = null
         var outTokens: Int? = null
         var stop: StopReason? = null
+        var servedModel: String? = null
+        var iterations: List<UsageIteration>? = null
         var call = prepared.call
         var attempt = 0
         var variantSwitches = 0
         var finished = false
         try {
             while (true) {
-                inTokens = null; outTokens = null; stop = null
+                inTokens = null; outTokens = null; stop = null; servedModel = null; iterations = null
                 val outcome = executeStream(call, prepared.adapter) { part ->
                     when (part) {
                         is StreamPart.Text -> { text.append(part.text); emit(EngineEvent.Text(part.text)) }
                         is StreamPart.Reasoning -> { reasoning.append(part.text); emit(EngineEvent.Reasoning(part.text)) }
-                        is StreamPart.Usage -> { part.inputTokens?.let { inTokens = it }; part.outputTokens?.let { outTokens = it } }
+                        is StreamPart.Usage -> {
+                            part.inputTokens?.let { inTokens = it }; part.outputTokens?.let { outTokens = it }
+                            part.model?.let { servedModel = it }; part.iterations?.let { iterations = it }
+                        }
                         is StreamPart.Stop -> if (stop != StopReason.REFUSAL) stop = part.reason
                         is StreamPart.Failure, StreamPart.End -> Unit
                     }
@@ -405,12 +427,12 @@ class AiEngine(
                     }
                 }
                 finished = true
-                if (text.isNotEmpty() || reasoning.isNotEmpty()) record(prepared, request, inTokens, outTokens, text.length + reasoning.length)
+                if (text.isNotEmpty() || reasoning.isNotEmpty()) record(prepared, request, inTokens, outTokens, text.length + reasoning.length, servedModel, iterations)
                 emit(EngineEvent.Failed(failure, text.toString()))
                 return@flow
             }
             finished = true
-            val usageRow = record(prepared, request, inTokens, outTokens, text.length + reasoning.length)
+            val usageRow = record(prepared, request, inTokens, outTokens, text.length + reasoning.length, servedModel, iterations)
             emit(
                 EngineEvent.Completed(
                     text = text.toString(),
@@ -425,21 +447,50 @@ class AiEngine(
         } finally {
             if (!finished && (text.isNotEmpty() || reasoning.isNotEmpty() || inTokens != null)) {
                 // Cancelled (Stop button, screen closed): the provider still bills what it generated.
-                withContext(NonCancellable) { runCatching { record(prepared, request, inTokens, outTokens, text.length + reasoning.length) } }
+                withContext(NonCancellable) { runCatching { record(prepared, request, inTokens, outTokens, text.length + reasoning.length, servedModel, iterations) } }
             }
         }
     }.flowOn(io)
 
     /** Writes a usage row; returns the usage and whether tokens were estimated. */
-    private suspend fun record(prepared: Prepared, request: AiRequest, inTokens: Int?, outTokens: Int?, outChars: Int): Pair<AiUsage, Boolean> {
-        val input = inTokens ?: prepared.estimatedInput
-        val output = outTokens ?: ((outChars + 3) / 4)
-        val cost = CostCalculator.tokens(prepared.call.model, input, output)
+    private suspend fun record(
+        prepared: Prepared,
+        request: AiRequest,
+        inTokens: Int?,
+        outTokens: Int?,
+        outChars: Int,
+        servedModel: String? = null,
+        iterations: List<UsageIteration>? = null,
+    ): Pair<AiUsage, Boolean> {
+        val requested = prepared.call.model
+        // Server-side fallbacks: the response may come from another model, billed at that model's prices,
+        // and every attempt (including declined ones) is listed in `iterations`.
+        val fallbacks = prepared.adapter.mayServeOtherModel(prepared.call)
+        val served = servedModel?.takeIf { fallbacks && it != requested.id }
+        val servedSpec = served?.let { models.spec(ModelRef(prepared.ref.provider, it)) } ?: requested
+        val attempts = iterations?.takeIf { fallbacks && inTokens != null }
+        val input: Int
+        val output: Int
+        val cost: Double?
+        if (attempts != null) {
+            input = attempts.sumOf { it.inputTokens }
+            output = attempts.sumOf { it.outputTokens }
+            val costs = attempts.map { a ->
+                val spec = a.model?.let { models.spec(ModelRef(prepared.ref.provider, it)) }
+                    ?: if (a.type == "fallback_message") servedSpec else requested
+                CostCalculator.tokens(spec, a.inputTokens, a.outputTokens)
+            }
+            cost = if (costs.any { it == null }) null else costs.sumOf { it ?: 0.0 }
+        } else {
+            input = inTokens ?: prepared.estimatedInput
+            output = outTokens ?: ((outChars + 3) / 4)
+            cost = CostCalculator.tokens(servedSpec, input, output)
+        }
         val u = AiUsage(input, output, cost)
         runCatching {
             usage.record(
                 AiUsageEntity(
-                    timestamp = clock(), provider = prepared.ref.provider.name, model = prepared.ref.modelId,
+                    timestamp = clock(), provider = prepared.ref.provider.name, model = served ?: prepared.ref.modelId,
                     task = request.task.name, inputTokens = input, outputTokens = output,
                     estimatedCostUsd = cost, documentId = request.documentId,
                 ),

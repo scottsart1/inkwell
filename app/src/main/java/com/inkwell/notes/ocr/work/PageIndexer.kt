@@ -22,9 +22,12 @@ import com.inkwell.notes.ocr.text.OcrScaling
 import com.inkwell.notes.ocr.text.ReadingOrder
 import com.inkwell.notes.ocr.text.TextSplitter
 import com.inkwell.notes.ocr.text.TypedText
+import com.inkwell.notes.pdf.PdfServiceImpl
 import com.inkwell.notes.search.TranscriptSearchText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -37,7 +40,7 @@ import java.io.File
  */
 internal class PageIndexer(private val graph: AppGraph) {
     private val writer: IndexWriter by lazy { (graph.search as? SearchIndexImpl)?.writer ?: IndexWriter(graph.db) }
-    internal val imageCache by lazy { ImageOcrCache(File(graph.context.noBackupFilesDir, "ocr-cache")) }
+    internal val imageCache by lazy { ImageOcrCache(File(graph.context.noBackupFilesDir, ImageOcrCache.DIR)) }
     private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
     /** What happened to a page. */
@@ -52,8 +55,14 @@ internal class PageIndexer(private val graph: AppGraph) {
      * Indexes [pageId]. Unless [force], a page indexed after its last change is skipped; with
      * [skipIndexedSince] > 0 pages indexed at or after that time are skipped too (resuming a
      * re-index). ML Kit failures are thrown so the worker can retry.
+     *
+     * Runs of the same page are serialised across workers: otherwise an older run could write
+     * its text after a newer one and still mark the page as current.
      */
-    suspend fun indexPage(docId: String, pageId: String, force: Boolean, skipIndexedSince: Long = 0L): Outcome {
+    suspend fun indexPage(docId: String, pageId: String, force: Boolean, skipIndexedSince: Long = 0L): Outcome =
+        pageLock(pageId).withLock { indexPageLocked(docId, pageId, force, skipIndexedSince) }
+
+    private suspend fun indexPageLocked(docId: String, pageId: String, force: Boolean, skipIndexedSince: Long): Outcome {
         val db = graph.db
         val pageEntity = withContext(Dispatchers.IO) { db.pages().get(pageId) } ?: return Outcome(indexed = false)
         val realDocId = pageEntity.documentId
@@ -86,27 +95,44 @@ internal class PageIndexer(private val graph: AppGraph) {
         val ocr = ArrayList<IndexEntry>()
         for (img in content.images.distinctBy { Triple(it.assetId, it.x, it.y) }) ocr += imageEntries(realDocId, img)
         var pdfText = emptyList<IndexEntry>()
+        var pdfTextFailed = false
+        // The text layer is given up on and nothing replaces it: leave the earlier PDF text rows.
+        var keepPdfText = false
         val pdfIndex = page.pdfPageIndex
         if (pdfIndex != null) {
             val layer = try {
-                graph.pdf.pageText(realDocId, pdfIndex)
+                val pdf = graph.pdf
+                if (pdf is PdfServiceImpl) pdf.pageTextOrNull(realDocId, pdfIndex) else pdf.pageText(realDocId, pdfIndex)
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
                 Log.w(TAG, "PDF text extraction failed: ${e.javaClass.simpleName}")
-                ""
+                null
             }
-            if (layer.trim().length >= MIN_PDF_TEXT_CHARS) {
+            if (layer == null) {
+                // Not "no text layer": keep the page's PDF text and OCR rows and try again later,
+                // unless there is nothing to keep or the file keeps running out of memory.
+                val pdf = graph.pdf
+                val givenUp = pdf is PdfServiceImpl && pdf.pageTextGivenUp(realDocId, pdfIndex)
+                when (PdfTextFallback.plan(indexedBefore = pageEntity.indexedAt > 0, givenUp = givenUp, autoOcr = ocrPrefs.autoOcrImports)) {
+                    PdfTextFallback.Plan.RETRY_LATER -> pdfTextFailed = true
+                    PdfTextFallback.Plan.OCR -> ocr += scannedPageEntries(realDocId, page, pdfIndex)
+                    PdfTextFallback.Plan.KEEP_PDF_TEXT -> keepPdfText = true
+                    PdfTextFallback.Plan.NO_TEXT -> Unit
+                }
+            } else if (layer.trim().length >= MIN_PDF_TEXT_CHARS) {
                 pdfText = TextSplitter.passages(layer).map { IndexEntry(it, null, null, ENGINE_PDF_TEXT) }
             } else if (ocrPrefs.autoOcrImports) {
                 ocr += scannedPageEntries(realDocId, page, pdfIndex)
             }
         }
-        sources[TextSource.PDF_TEXT] = pdfText
-        sources[TextSource.OCR] = ocr
+        if (!pdfTextFailed) {
+            if (!keepPdfText) sources[TextSource.PDF_TEXT] = pdfText
+            sources[TextSource.OCR] = ocr
+        }
 
         writer.replacePageSources(realDocId, pageId, sources)
-        if (pendingTag != null) return Outcome(indexed = false, handwritingPendingTag = pendingTag)
+        if (pendingTag != null || pdfTextFailed) return Outcome(indexed = false, handwritingPendingTag = pendingTag)
         withContext(Dispatchers.IO) { db.pages().markIndexed(pageId, started) }
         return Outcome(indexed = true)
     }
@@ -227,11 +253,11 @@ internal class PageIndexer(private val graph: AppGraph) {
         val impl = recognition() ?: return emptyList()
         if (page.isInfinite) return emptyList()
         val prefs = graph.settings.current.ocr
-        val sourceSize = withContext(Dispatchers.IO) { graph.files.sourcePdf(docId).let { if (it.exists()) it.length() else 0L } }
+        val sourceSize = sourcePdfSize(docId)
         val key = "$PDF_PAGE_KEY$pdfIndex"
         fun wantsAi(c: CachedImageOcr): Boolean {
             val mean = c.confidence ?: return false
-            return !c.isAi && prefs.aiAssistLowConfidence && mean < prefs.lowConfidenceThreshold && aiAvailable()
+            return !c.isAi && !c.aiTried && prefs.aiAssistLowConfidence && mean < prefs.lowConfidenceThreshold && aiAvailable()
         }
         val cached = if (sourceSize > 0) imageCache.get(docId, key, sourceSize) else null
         if (cached != null && !wantsAi(cached)) return pageEntries(cached, page)
@@ -264,11 +290,24 @@ internal class PageIndexer(private val graph: AppGraph) {
             }
             if (ai != null && ai.text.isNotBlank()) {
                 result = CachedImageOcr(ai.engine, ai.blocks.map { CachedImageOcr.CachedBlock(it.text, WHOLE, null) }, null)
+            } else if (ai != null) {
+                // The (billed) transcription found no text: keep the local result, but do not ask again.
+                result = local.copy(aiTried = true)
             }
         }
-        if (sourceSize > 0) imageCache.put(docId, key, sourceSize, result)
+        // The source may have been replaced meanwhile (pages inserted): storing under the old size
+        // would delete the result carried over to the new file, so it would be OCRed (and paid
+        // for) again. Store only while the file is still the one this page was read from, checked
+        // under the cache lock that copySize also holds.
+        if (sourceSize > 0) imageCache.put(docId, key, sourceSize, result) { sourceSize == sourcePdfSizeNow(docId) }
         return pageEntries(result, page)
     }
+
+    /** Size of [docId]'s source PDF (0 when it has none), the version key of scanned-page results. */
+    private suspend fun sourcePdfSize(docId: String): Long = withContext(Dispatchers.IO) { sourcePdfSizeNow(docId) }
+
+    /** [sourcePdfSize] on the calling thread (already on IO). */
+    private fun sourcePdfSizeNow(docId: String): Long = graph.files.sourcePdf(docId).let { if (it.exists()) it.length() else 0L }
 
     private fun normalised(text: String, b: FloatArray, w: Float, h: Float, confidence: Float?) =
         CachedImageOcr.CachedBlock(text, listOf(b[0] / w, b[1] / h, b[2] / w, b[3] / h), confidence)
@@ -294,8 +333,13 @@ internal class PageIndexer(private val graph: AppGraph) {
         const val MIN_PDF_TEXT_CHARS = 20
         const val ENGINE_PDF_TEXT = "pdf-text"
         const val ENGINE_TYPED = "typed"
-        private const val PDF_PAGE_KEY = "pdfpage-"
+        private const val PDF_PAGE_KEY = ImageOcrCache.PDF_PAGE_KEY
         private const val IMAGE_KEY = "asset-"
         private val WHOLE = listOf(0f, 0f, 1f, 1f)
+
+        /** Striped per-page locks shared by every indexer in the process (pages are indexed by several workers). */
+        private val pageLocks = Array(32) { Mutex() }
+
+        private fun pageLock(pageId: String): Mutex = pageLocks[(pageId.hashCode() and Int.MAX_VALUE) % pageLocks.size]
     }
 }

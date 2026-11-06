@@ -20,6 +20,8 @@ import com.inkwell.notes.core.model.NotesExportFormat
 import com.inkwell.notes.core.model.OutputTarget
 import com.inkwell.notes.export.SyncManagerImpl
 import com.inkwell.notes.export.SyncStatus
+import com.inkwell.notes.export.backup.AutoBackupStatus
+import com.inkwell.notes.export.backup.BackupPrefs
 import com.inkwell.notes.export.sync.DriveException
 import com.inkwell.notes.export.sync.PlayServicesDriveAuth
 import com.inkwell.notes.export.sync.SafFolderAccess
@@ -93,12 +95,16 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
         private set
     var autoBackup by mutableStateOf<AutoBackupPref?>(null)
         private set
+    /** How the automatic backups have gone (complete, or documents left out). */
+    var autoBackupStatus by mutableStateOf(AutoBackupStatus())
+        private set
     /** One-off problem to show (picker unavailable, permission refused...). */
     var notice by mutableStateOf<String?>(null)
 
     init {
         viewModelScope.launch {
             autoBackup = withContext(Dispatchers.IO) { runCatching { uiPrefs.autoBackup() }.getOrNull() }
+            autoBackupStatus = withContext(Dispatchers.IO) { runCatching { BackupPrefs(context).status() }.getOrNull() } ?: AutoBackupStatus()
         }
     }
 
@@ -311,6 +317,8 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
             val pref = AutoBackupPref(uri.toString(), label)
             withContext(Dispatchers.IO) { uiPrefs.setAutoBackup(pref) }
             autoBackup = pref
+            // Scheduling a new folder cleared the old folder's status (AutoBackup.schedule).
+            autoBackupStatus = withContext(Dispatchers.IO) { runCatching { BackupPrefs(context).status() }.getOrNull() } ?: AutoBackupStatus()
             releaseIfUnused(previous, keep = uri.toString())
         }
     }
@@ -323,6 +331,7 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
                 uiPrefs.setAutoBackup(null)
             }
             autoBackup = null
+            autoBackupStatus = AutoBackupStatus()
             releaseIfUnused(previous, keep = null)
         }
     }

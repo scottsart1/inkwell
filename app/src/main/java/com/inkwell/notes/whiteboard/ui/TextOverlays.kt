@@ -69,12 +69,22 @@ import kotlin.math.roundToInt
 /**
  * Edits a board text box in place: a text field at the box's position, styled like the box
  * at the current zoom, with a small format bar. Tapping outside or Back commits; an emptied
- * existing box is removed by the canvas.
+ * existing box is removed by the canvas. [onDraft] receives every change, so the owner can
+ * commit it if the screen goes away first.
  */
 @Composable
-fun TextBoxEditor(request: TextEditRequest, paperColor: Int, onDone: (String, TextConfig) -> Unit) {
+fun TextBoxEditor(
+    request: TextEditRequest,
+    paperColor: Int,
+    onDraft: (String, TextConfig) -> Unit = { _, _ -> },
+    onDone: (String, TextConfig) -> Unit,
+) {
     var value by remember(request) { mutableStateOf(TextFieldValue(request.initialText, TextRange(request.initialText.length))) }
     var config by remember(request) { mutableStateOf(request.config) }
+    fun setConfig(next: TextConfig) {
+        config = next
+        onDraft(value.text, next)
+    }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val density = LocalDensity.current
@@ -113,18 +123,18 @@ fun TextBoxEditor(request: TextEditRequest, paperColor: Int, onDone: (String, Te
             PillSurface(shape = RoundedCornerShape(12.dp)) {
                 Row(Modifier.height(Dimens.minTouch).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     KitIconButton(Icons.Outlined.Remove, stringResource(R.string.wb_text_smaller), {
-                        config = config.copy(fontSizePt = (config.fontSizePt - 2f).coerceAtLeast(8f))
+                        setConfig(config.copy(fontSizePt = (config.fontSizePt - 2f).coerceAtLeast(8f)))
                     })
                     Text(stringResource(R.string.wb_pt_value, config.fontSizePt.roundToInt()), style = MaterialTheme.typography.labelMedium, color = c.ink, modifier = Modifier.widthIn(min = 40.dp))
                     KitIconButton(Icons.Outlined.Add, stringResource(R.string.wb_text_larger), {
-                        config = config.copy(fontSizePt = (config.fontSizePt + 2f).coerceAtMost(96f))
+                        setConfig(config.copy(fontSizePt = (config.fontSizePt + 2f).coerceAtMost(96f)))
                     })
                     PillDivider()
-                    KitIconButton(Icons.Outlined.FormatBold, stringResource(R.string.wb_bold), { config = config.copy(bold = !config.bold) }, selected = config.bold)
-                    KitIconButton(Icons.Outlined.FormatItalic, stringResource(R.string.wb_italic), { config = config.copy(italic = !config.italic) }, selected = config.italic)
+                    KitIconButton(Icons.Outlined.FormatBold, stringResource(R.string.wb_bold), { setConfig(config.copy(bold = !config.bold)) }, selected = config.bold)
+                    KitIconButton(Icons.Outlined.FormatItalic, stringResource(R.string.wb_italic), { setConfig(config.copy(italic = !config.italic)) }, selected = config.italic)
                     PillDivider()
                     BoardPalettes.pen.take(5).forEach { nc ->
-                        ColorSwatch(nc.argb, BoardPalettes.sameColor(nc.argb, config.color), stringResource(nc.name), { config = config.copy(color = nc.argb) }, diameter = 20.dp)
+                        ColorSwatch(nc.argb, BoardPalettes.sameColor(nc.argb, config.color), stringResource(nc.name), { setConfig(config.copy(color = nc.argb)) }, diameter = 20.dp)
                     }
                     PillDivider()
                     KitIconButton(Icons.Outlined.Check, stringResource(R.string.cd_done), { commit() }, tint = c.accent)
@@ -133,7 +143,10 @@ fun TextBoxEditor(request: TextEditRequest, paperColor: Int, onDone: (String, Te
             Spacer(Modifier.height(6.dp))
             BasicTextField(
                 value = value,
-                onValueChange = { value = it },
+                onValueChange = {
+                    value = it
+                    onDraft(it.text, config)
+                },
                 textStyle = style,
                 cursorBrush = SolidColor(c.accent),
                 modifier = Modifier
@@ -157,9 +170,9 @@ fun TextBoxEditor(request: TextEditRequest, paperColor: Int, onDone: (String, Te
     }
 }
 
-/** Edits a sticky note's text and colour over the canvas. */
+/** Edits a sticky note's text and colour over the canvas. [onDraft] receives every change. */
 @Composable
-fun StickyEditor(request: StickyEditRequest, onDone: (String, Int) -> Unit) {
+fun StickyEditor(request: StickyEditRequest, onDraft: (String, Int) -> Unit = { _, _ -> }, onDone: (String, Int) -> Unit) {
     var value by remember(request) { mutableStateOf(TextFieldValue(request.initialText, TextRange(request.initialText.length))) }
     var color by remember(request) { mutableStateOf(request.color) }
     val focus = remember { FocusRequester() }
@@ -187,7 +200,10 @@ fun StickyEditor(request: StickyEditRequest, onDone: (String, Int) -> Unit) {
         Column(Modifier.offset { IntOffset(x.roundToInt(), y.roundToInt()) }) {
             BasicTextField(
                 value = value,
-                onValueChange = { value = it },
+                onValueChange = {
+                    value = it
+                    onDraft(it.text, color)
+                },
                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = Color(0xFF1A1916)),
                 cursorBrush = SolidColor(Color(0xFF1A1916)),
                 modifier = Modifier
@@ -210,7 +226,10 @@ fun StickyEditor(request: StickyEditRequest, onDone: (String, Int) -> Unit) {
             PillSurface(shape = RoundedCornerShape(12.dp)) {
                 Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     BoardPalettes.stickies.forEach { nc ->
-                        ColorSwatch(nc.argb, BoardPalettes.sameColor(nc.argb, color), stringResource(nc.name), { color = nc.argb }, diameter = 22.dp)
+                        ColorSwatch(nc.argb, BoardPalettes.sameColor(nc.argb, color), stringResource(nc.name), {
+                            color = nc.argb
+                            onDraft(value.text, nc.argb)
+                        }, diameter = 22.dp)
                     }
                     PillDivider()
                     KitIconButton(Icons.Outlined.Check, stringResource(R.string.cd_done), { commit() }, tint = c.accent)

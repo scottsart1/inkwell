@@ -3,6 +3,7 @@ package com.inkwell.notes.editor.ui
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.unit.Dp
 import com.inkwell.notes.ai.ui.AiPanelContext
@@ -14,6 +15,7 @@ import com.inkwell.notes.core.model.ToolType
 import com.inkwell.notes.core.storage.db.ReusableElementEntity
 import com.inkwell.notes.editor.ImagePlacement
 import com.inkwell.notes.editor.SelectionText
+import com.inkwell.notes.editor.logic.PendingCapture
 import com.inkwell.notes.editor.ui.toolbar.ColorTarget
 import com.inkwell.notes.ui.theme.Dimens
 
@@ -87,5 +89,29 @@ class PaneUiState(initialRightWidth: Dp = Dimens.panelWidth) {
         left != null -> { left = null; true }
         focusMode -> { focusMode = false; true }
         else -> false
+    }
+
+    companion object {
+        /**
+         * Saves only a camera capture in flight (the camera app may outlive this process);
+         * everything else starts fresh.
+         */
+        val CameraSaver: Saver<PaneUiState, String> = Saver(
+            save = { s ->
+                s.cameraFile?.let { f ->
+                    val p = s.pendingPlacement
+                    PendingCapture(f.path, p?.pageIndex, p?.at?.x, p?.at?.y).encode()
+                }
+            },
+            restore = { saved ->
+                PaneUiState().apply {
+                    PendingCapture.decode(saved)?.let { c ->
+                        cameraFile = java.io.File(c.path)
+                        val at = if (c.x != null && c.y != null) android.graphics.PointF(c.x, c.y) else null
+                        if (c.pageIndex != null || at != null) pendingPlacement = ImagePlacement(c.pageIndex, at)
+                    }
+                }
+            },
+        )
     }
 }

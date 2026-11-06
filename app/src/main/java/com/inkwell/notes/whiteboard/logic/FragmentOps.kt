@@ -2,7 +2,12 @@ package com.inkwell.notes.whiteboard.logic
 
 import com.inkwell.notes.core.model.InkPoints
 import com.inkwell.notes.core.model.PageContent
+import com.inkwell.notes.core.model.ShapeItem
+import com.inkwell.notes.core.model.ShapeKind
+import com.inkwell.notes.core.model.TextItem
 import java.util.UUID
+import kotlin.math.floor
+import kotlin.math.max
 import kotlin.math.min
 
 /** Pure transforms of [PageContent] fragments (selections, pages moved between documents). */
@@ -46,7 +51,9 @@ object FragmentOps {
 
     /**
      * Places [f] inside [target]: scaled down to fit (never up unless [allowUpscale]),
-     * horizontally centred and aligned to the top of the target.
+     * horizontally centred and aligned to the top of the target. When the scale changes,
+     * stickies become a filled box plus a text box ([stickiesAsShapes]): a sticky's text is
+     * drawn at a fixed size and would not shrink with the note.
      */
     fun fitInto(f: PageContent, target: Box, allowUpscale: Boolean = false): PageContent {
         val b = BoardGeometry.contentBounds(f) ?: return f
@@ -54,11 +61,39 @@ object FragmentOps {
         val bh = maxOf(b.height, 1e-3f)
         var s = min(target.width / bw, target.height / bh)
         if (!allowUpscale) s = min(s, 1f)
-        val scaled = scale(f, s, b.left, b.top)
+        val scaled = scale(if (s != 1f) stickiesAsShapes(f) else f, s, b.left, b.top)
         val w = bw * s
         val dx = target.left + (target.width - w) / 2f - b.left
         val dy = target.top - b.top
         return translate(scaled, dx, dy)
+    }
+
+    /**
+     * Replaces every sticky by a filled rounded box (keeping the sticky's id, so attached
+     * connectors still find it) and, when it has text, a text box laid out like the sticky's
+     * (14pt, 10pt inset) in the same group. Unlike a sticky, both scale with [scale].
+     */
+    fun stickiesAsShapes(f: PageContent, newId: () -> String = { UUID.randomUUID().toString() }): PageContent {
+        if (f.stickies.isEmpty()) return f
+        val shapes = ArrayList(f.shapes)
+        val texts = ArrayList(f.texts)
+        for (st in f.stickies) {
+            val group = st.groupId ?: if (st.text.isNotEmpty()) newId() else null
+            shapes += ShapeItem(
+                id = st.id, kind = ShapeKind.ROUNDED_RECTANGLE, points = floatArrayOf(st.x, st.y, st.x + st.width, st.y + st.height),
+                strokeColor = 0, fillColor = st.color, strokeWidth = 0f, z = st.z, createdAt = st.createdAt,
+                audio = st.audio, groupId = group, cornerRadius = STICKY_CORNER,
+            )
+            if (st.text.isNotEmpty()) {
+                texts += TextItem(
+                    id = newId(), x = st.x + STICKY_INSET, y = st.y + STICKY_INSET,
+                    width = max(1f, st.width - 2 * STICKY_INSET), height = max(1f, st.height - 2 * STICKY_INSET),
+                    text = st.text, fontSizePt = STICKY_FONT_PT, color = STICKY_TEXT_COLOR, z = st.z,
+                    createdAt = st.createdAt, groupId = group,
+                )
+            }
+        }
+        return f.copy(shapes = shapes, texts = texts, stickies = emptyList())
     }
 
     fun assetIds(f: PageContent): Set<String> = f.images.mapTo(LinkedHashSet()) { it.assetId }
@@ -131,6 +166,12 @@ object FragmentOps {
         f.stickies.forEach { if (it.text.isNotBlank()) pieces += Piece(it.x, it.y, it.text.trim()) }
         f.connectors.forEach { if (it.label.isNotBlank()) pieces += Piece(minOf(it.fromX, it.toX), minOf(it.fromY, it.toY), it.label.trim()) }
         // Rows of ~40pt, left to right within a row.
-        return pieces.sortedWith(compareBy<Piece>({ (it.y / 40f).toInt() }, { it.x })).joinToString("\n\n") { it.text }
+        return pieces.sortedWith(compareBy<Piece>({ floor(it.y / 40f).toInt() }, { it.x })).joinToString("\n\n") { it.text }
     }
+
+    // The sticky look of PageRenderer.drawSticky.
+    private const val STICKY_CORNER = 6f
+    private const val STICKY_INSET = 10f
+    private const val STICKY_FONT_PT = 14f
+    private const val STICKY_TEXT_COLOR = 0xFF1A1916.toInt()
 }

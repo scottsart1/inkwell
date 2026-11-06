@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -107,7 +108,10 @@ fun OverlayPanel(width: Dp?, atEnd: Boolean, modifier: Modifier = Modifier, cont
         Row(
             (if (width != null) Modifier.width(width) else Modifier.fillMaxWidth())
                 .fillMaxHeight()
-                .background(c.surface),
+                .background(c.surface)
+                // Being hit at all keeps pen and touch on the panel's empty areas from reaching
+                // the canvas drawn beneath it; children still handle their own input first.
+                .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } },
         ) {
             if (atEnd && width != null) VerticalDivider(color = c.outline)
             Column(Modifier.weight(1f).fillMaxHeight(), content = content)

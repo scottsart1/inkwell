@@ -125,6 +125,10 @@ class AiServiceImpl(private val graph: AppGraph) : AiService {
                     setInvalid(provider, check.message)
                     graph.settings.update { s -> s.copy(ai = s.ai.updateProvider(provider) { it.copy(validatedAt = 0) }) }
                 }
+                // The provider accepted the key but refused the model list (403). Older builds flagged that as a
+                // rejected key; clear that stale flag without marking the key validated. A 403 can also come
+                // before the key is checked (region, proxy), so a flag a 401 set stays.
+                check.authenticated -> if (isStaleForbiddenFlag(invalidReason(provider))) setInvalid(provider, null)
             }
         }
         return if (check.ok) Result.success(check.message) else Result.failure(AiException(check.message))
@@ -240,6 +244,13 @@ class AiServiceImpl(private val graph: AppGraph) : AiService {
          */
         fun sanitizeKey(raw: String): String =
             raw.filterNot { it.isWhitespace() || Character.getType(it) == Character.FORMAT.toInt() }
+
+        /**
+         * True for an "Invalid" reason older builds stored after a 403 ("refused access"), which
+         * did not mean the key was rejected; false for a 401's "rejected the API key" or no flag.
+         */
+        fun isStaleForbiddenFlag(reason: String?): Boolean =
+            reason != null && ("(403)" in reason || "refused access" in reason)
 
         fun encodePng(src: Bitmap, maxEdge: Int): ByteArray {
             val long = max(src.width, src.height)

@@ -350,6 +350,7 @@ class LibraryRepositoryPagesAndFoldersTest {
         assertEquals("X (2)", repo.getFolder(x2.id)!!.name)
         assertNotNull(repo.getFolder(x1.id))
         assertEquals(listOf(d.id), h.hooks.metaChanged)
+        assertEquals(listOf(d.id), h.hooks.moved)
     }
 
     @Test fun trashingAFolderTrashesItsSubtreeAndRestoreOnlyBringsBackWhatWentTogether() = runTest {
@@ -386,6 +387,37 @@ class LibraryRepositoryPagesAndFoldersTest {
         assertEquals("A / B / C", repo.folderPath(c.id))
     }
 
+    @Test fun restoringAFolderRenamesItWhenANewSiblingTookItsName() = runTest {
+        val old = repo.createFolder("Biology", null)
+        val d = repo.createDocument(DocKind.NOTEBOOK, folderId = old.id)
+        repo.trashFolder(old.id)
+        val fresh = repo.createFolder("Biology", null)
+        assertEquals("Biology", fresh.name)
+        h.hooks.metaChanged.clear()
+        h.hooks.moved.clear()
+        repo.restoreFolder(old.id)
+        assertEquals("Biology (2)", repo.getFolder(old.id)!!.name)
+        assertEquals("Biology", repo.getFolder(fresh.id)!!.name)
+        assertEquals(listOf(d.id), h.hooks.metaChanged)
+        // Its folder path changed: sync must move the copies, not only search.
+        assertEquals(listOf(d.id), h.hooks.moved)
+    }
+
+    @Test fun restoringADocumentRenamesARevivedFolderWhenANewSiblingTookItsName() = runTest {
+        val a = repo.createFolder("A", null)
+        val b = repo.createFolder("B", a.id)
+        val d = repo.createDocument(DocKind.NOTEBOOK, folderId = b.id)
+        repo.trashFolder(a.id)
+        repo.createFolder("A", null)
+        h.hooks.moved.clear()
+        repo.restoreDocument(d.id)
+        assertNull(repo.getFolder(a.id)!!.trashedAt)
+        assertEquals("A (2) / B", repo.folderPath(b.id))
+        assertEquals(b.id, repo.getDocument(d.id)!!.folderId)
+        // Its folder path changed with the revived folder's new name: sync moves its copies.
+        assertEquals(listOf(d.id), h.hooks.moved)
+    }
+
     @Test fun emptyingTheTrashReRootsLiveContentOfDeletedFolders() = runTest {
         val a = repo.createFolder("A", null)
         val b = repo.createFolder("B", a.id)
@@ -413,6 +445,7 @@ class LibraryRepositoryPagesAndFoldersTest {
         assertEquals("b (2)", after.name)
         assertEquals(5, after.color)
         assertEquals(listOf(d.id), h.hooks.metaChanged)
+        assertEquals(listOf(d.id), h.hooks.moved)
         // Colour-only change: no rename, no notification.
         h.hooks.metaChanged.clear()
         repo.updateFolder(after.copy(color = 6))

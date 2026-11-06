@@ -45,10 +45,17 @@ object ZipSafety {
 
     /**
      * Extracts [zip] into [dir] (which must exist and be empty), refusing unsafe names, more
-     * than [maxEntries] entries or more than [maxBytes] in total. Returns the relative paths
-     * written. Directories are created as needed.
+     * than [maxEntries] entries or more than [maxBytes] in total ([overBytes] says why, e.g.
+     * NO_SPACE when [maxBytes] is the free space). Returns the relative paths written.
+     * Directories are created as needed.
      */
-    fun extract(zip: ZipInputStream, dir: File, maxBytes: Long, maxEntries: Int = MAX_ENTRIES): List<String> {
+    fun extract(
+        zip: ZipInputStream,
+        dir: File,
+        maxBytes: Long,
+        maxEntries: Int = MAX_ENTRIES,
+        overBytes: PackageException.Reason = PackageException.Reason.TOO_LARGE,
+    ): List<String> {
         val written = ArrayList<String>()
         var total = 0L
         val buf = ByteArray(64 * 1024)
@@ -64,7 +71,7 @@ object ZipSafety {
                     val n = zip.read(buf)
                     if (n < 0) break
                     total += n
-                    if (total > maxBytes) throw PackageException(PackageException.Reason.TOO_LARGE)
+                    if (total > maxBytes) throw PackageException(overBytes)
                     out.write(buf, 0, n)
                 }
             }

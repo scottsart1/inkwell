@@ -9,7 +9,9 @@ import com.inkwell.notes.app.AppGraph
 import com.inkwell.notes.core.model.DocumentMeta
 import com.inkwell.notes.export.ExportFormat
 import com.inkwell.notes.export.ExportOptions
+import com.inkwell.notes.pdf.importScanResult
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
@@ -45,7 +47,8 @@ object LibraryJobs {
 
     @Volatile private var current: Job? = null
 
-    val isBusy: Boolean get() = current?.isActive == true
+    /** A cancelled job stays busy until it has actually stopped, so two never run at once. */
+    val isBusy: Boolean get() = current?.isCompleted == false
 
     fun cancel() {
         current?.cancel()
@@ -91,11 +94,11 @@ object LibraryJobs {
         }
     }
 
-    /** Imports the PDF produced by the document scanner. */
+    /** Imports the PDF produced by the document scanner, then removes the scanner's copy. */
     fun importScan(graph: AppGraph, pdfUri: Uri, folderId: String?) {
         launchJob(graph, Kind.IMPORT, 0) {
             val doc = try {
-                graph.pdf.importPdf(pdfUri, folderId)
+                graph.pdf.importScanResult(pdfUri, emptyList(), folderId)
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
@@ -172,9 +175,11 @@ object LibraryJobs {
             return
         }
         _progress.value = Progress(kind, 0, total)
-        current = graph.appScope.launch(Dispatchers.IO) {
+        // Started only after it is [current], so it can tell whether the progress is still its own.
+        val job = graph.appScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            val self = coroutineContext[Job]
             try {
-                block { done -> _progress.value = Progress(kind, done.coerceIn(0, total), total) }
+                block { done -> if (current === self) _progress.value = Progress(kind, done.coerceIn(0, total), total) }
             } catch (c: CancellationException) {
                 message(UiText.Res(R.string.lib_msg_cancelled))
                 throw c
@@ -182,9 +187,11 @@ object LibraryJobs {
                 Log.w(TAG, "Library job failed: ${t.javaClass.simpleName}")
                 message(UiText.Res(R.string.lib_err_generic))
             } finally {
-                _progress.value = null
+                if (current === self) _progress.value = null
             }
         }
+        current = job
+        job.start()
     }
 
     /** The user-visible file name of a content Uri, if the provider reports one. Runs on IO. */

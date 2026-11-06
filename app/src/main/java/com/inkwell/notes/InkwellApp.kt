@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import com.inkwell.notes.app.AppGraph
 import com.inkwell.notes.core.diagnostics.CrashReports
+import com.inkwell.notes.speakers.ui.VoiceSampleRecorder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -18,6 +19,9 @@ class InkwellApp : Application() {
         graph.appScope.launch(Dispatchers.IO) {
             // Why the previous process ended, if it crashed (Settings > About shows it).
             runCatching { CrashReports.collect(this@InkwellApp) }
+            // An enrollment sample (the user's voice, unencrypted) that a crash or kill left
+            // behind: no enrollment can be under way in a process that is only starting.
+            VoiceSampleRecorder.sweep(this@InkwellApp, olderThanMs = 0)
         }
         graph.appScope.launch {
             runCatching { graph.recording.recoverInterrupted() }

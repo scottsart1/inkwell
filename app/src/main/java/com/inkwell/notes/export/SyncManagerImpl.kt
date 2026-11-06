@@ -76,7 +76,7 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
             folders = SafFolderAccess(graph.context),
             network = AndroidNetworkState(graph.context),
             state = stateStore,
-            onFolderRevoked = { clearFolderDestination() },
+            onFolderRevoked = { revokedUri -> clearFolderDestination(revokedUri) },
         )
     }
 
@@ -123,6 +123,21 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
         }
     }
 
+    override fun onDocumentMoved(docId: String) {
+        val prefs = graph.settings.current.destinations
+        if (!prefs.autoSync || !prefs.hasAnyTarget) return
+        // Its own key: an edit settling meanwhile must not replace the move, nor the move the edit.
+        debouncer.submit(movedKey(docId)) {
+            withContext(Dispatchers.IO) {
+                val now = graph.settings.current.destinations
+                if (now.autoSync && now.hasAnyTarget) {
+                    safely { engine.enqueueMoved(docId, now) }
+                    kick()
+                }
+            }
+        }
+    }
+
     override fun onTranscriptReady(docId: String, recordingId: String) = enqueueRecording(docId, recordingId, SyncKind.TRANSCRIPT)
 
     override fun onRecordingFinished(docId: String, recordingId: String) = enqueueRecording(docId, recordingId, SyncKind.AUDIO)
@@ -140,10 +155,12 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
 
     override fun onDocumentDeleted(docId: String) {
         debouncer.cancel(docId)
+        debouncer.cancel(movedKey(docId))
         graph.appScope.launch(Dispatchers.IO) {
-            // Copies in the folder and in Drive stay: deleting locally never deletes them.
+            // Copies in the folder and in Drive stay: deleting locally never deletes them. The
+            // folder location is kept too, so a later document with the same title gets its own
+            // directory instead of writing over these last copies.
             safely { graph.db.syncQueue().dropOpenForDocument(docId) }
-            safely { stateStore.setFolderLocation(docId, null) }
         }
     }
 
@@ -155,7 +172,8 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
             if (dao.pendingCount() == 0) engine.enqueueEverything(prefs) else engine.enqueueChangedDocuments(prefs)
         }
         val report = try {
-            engine.run()
+            // The user asked: items waiting out a retry backoff go now too.
+            engine.run(ignoreBackoff = true)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -297,7 +315,7 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
     fun kick() {
         graph.appScope.launch(Dispatchers.IO) {
             safely {
-                val items = graph.db.syncQueue().pending(QUEUE_SCAN_LIMIT)
+                val items = graph.db.syncQueue().pendingKindsAndTargets()
                 val needs = syncNeeds(items, graph.settings.current.destinations)
                 if (needs.any) scheduler.schedule(needs)
             }
@@ -315,8 +333,11 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
         _status.update { it.copy(lastSuccessAt = lastSuccess, lastError = lastError) }
     }
 
-    private suspend fun clearFolderDestination() {
-        graph.settings.update { it.copy(destinations = it.destinations.withoutFolder()) }
+    /** Clears the folder destination, unless the user has chosen another folder than [revokedUri] since. */
+    private suspend fun clearFolderDestination(revokedUri: String?) {
+        graph.settings.update { s ->
+            if (s.destinations.folderUri != revokedUri) s else s.copy(destinations = s.destinations.withoutFolder())
+        }
     }
 
     // ------------------------------------------------------------------ destination changes
@@ -342,7 +363,8 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
             for (added in after - before) enqueued += engine.enqueueEverything(new, onlyKind = kind, onlyTarget = added)
         }
         if (new.folderUri != old.folderUri) {
-            stateStore.clearAllLocations()
+            // Document locations are kept per folder (see PrefsSyncStateStore): coming back to a
+            // folder later still knows which directories hold deleted documents' last copies.
             if (old.folderUri != null && new.folderUri != null) enqueued += engine.enqueueEverything(new, onlyTarget = OutputTarget.FOLDER)
         }
         val accountChanged = !new.driveAccount.equals(old.driveAccount, ignoreCase = true)
@@ -372,11 +394,12 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
 
     private companion object {
         const val TAG = "InkwellSync"
+        /** Debounce key of a document's move; its edits use the document id itself. */
+        fun movedKey(docId: String) = "$docId#moved"
         /** Notes are copied this long after the last edit of a document. */
         const val EDIT_SETTLE_MS = 30_000L
         const val SETTINGS_SETTLE_MS = 1_200L
         const val STARTUP_DELAY_MS = 15_000L
-        const val QUEUE_SCAN_LIMIT = 5000
         /** Wait after Google Drive asked Inkwell to slow down. */
         const val SLOW_DOWN_MS = 5L * 60 * 1000
         /** `sync_queue.target` of the removed notes vault. */

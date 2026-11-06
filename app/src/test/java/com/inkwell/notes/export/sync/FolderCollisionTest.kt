@@ -24,6 +24,12 @@ class FolderCollisionTest {
     }
 
     @Test
+    fun `withId adds the suffix to a clean title too`() {
+        assertEquals("Biology (0b6f2c)", FolderNaming.documentDir(emptyList(), "Biology", "0b6f2c1e-8a4d", withId = true).last())
+        assertEquals("Biology", FolderNaming.documentDir(emptyList(), "Biology", null, withId = true).last())
+    }
+
+    @Test
     fun `a truncated long title stays within the segment limit with its suffix`() {
         val seg = FolderNaming.documentDir(emptyList(), "x".repeat(150), "abcdef123").last()
         assertTrue(seg.endsWith(" (abcdef)"))

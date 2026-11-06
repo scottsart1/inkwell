@@ -354,7 +354,8 @@ private fun Conversation(
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
-                    val lastAssistantId = messages.lastOrNull { it.role == AiRole.ASSISTANT }?.id
+                    // Retry only on an answer that ends the thread (regenerate appends the new answer at the end).
+                    val lastAssistantId = messages.lastOrNull()?.takeIf { it.role == AiRole.ASSISTANT }?.id
                     items(messages, key = { it.id }) { m ->
                         when (m.role) {
                             AiRole.USER -> UserBubble(m.text)

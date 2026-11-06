@@ -168,6 +168,35 @@ interface TextIndexDao {
     )
     suspend fun searchLiveLike(needle: String, limit: Int): List<TextSearchRow>
 
+    /** [searchLive] within one document (in-document search: the filter applies before the limit). */
+    @Query(
+        """SELECT t.rowId AS rowId, t.documentId AS documentId, t.pageId AS pageId, t.recordingId AS recordingId,
+                  t.source AS source, t.text AS text, t.confidence AS confidence, t.timestampMs AS timestampMs,
+                  t.bounds AS bounds, p.pageIndex AS pageIndex
+           FROM text_index t
+           JOIN documents d ON d.id = t.documentId
+           LEFT JOIN pages p ON p.id = t.pageId
+           WHERE t.rowId IN (SELECT rowid FROM text_index_fts WHERE text_index_fts MATCH :ftsQuery)
+             AND t.documentId = :docId AND d.trashedAt IS NULL
+           ORDER BY t.rowId
+           LIMIT :limit"""
+    )
+    suspend fun searchLiveInDocument(ftsQuery: String, docId: String, limit: Int): List<TextSearchRow>
+
+    /** [searchLiveLike] within one document. */
+    @Query(
+        """SELECT t.rowId AS rowId, t.documentId AS documentId, t.pageId AS pageId, t.recordingId AS recordingId,
+                  t.source AS source, t.text AS text, t.confidence AS confidence, t.timestampMs AS timestampMs,
+                  t.bounds AS bounds, p.pageIndex AS pageIndex
+           FROM text_index t
+           JOIN documents d ON d.id = t.documentId
+           LEFT JOIN pages p ON p.id = t.pageId
+           WHERE t.text LIKE '%' || :needle || '%' ESCAPE '\' AND t.documentId = :docId AND d.trashedAt IS NULL
+           ORDER BY t.rowId
+           LIMIT :limit"""
+    )
+    suspend fun searchLiveLikeInDocument(needle: String, docId: String, limit: Int): List<TextSearchRow>
+
     /** Rows by id with their page index (semantic search results). */
     @Query(
         """SELECT t.rowId AS rowId, t.documentId AS documentId, t.pageId AS pageId, t.recordingId AS recordingId,
@@ -339,6 +368,21 @@ interface SyncQueueDao {
 
     @Query("SELECT COUNT(*) FROM sync_queue WHERE status = 'PENDING'")
     suspend fun pendingCount(): Int
+
+    /** Pending items in queue order (enqueuedAt, rowId) after the item ([afterAt], [afterRowId]): one page of the whole queue. */
+    @Query(
+        """SELECT * FROM sync_queue WHERE status = 'PENDING'
+           AND (enqueuedAt > :afterAt OR (enqueuedAt = :afterAt AND rowId > :afterRowId))
+           ORDER BY enqueuedAt, rowId LIMIT :limit"""
+    )
+    suspend fun pendingAfter(afterAt: Long, afterRowId: Long, limit: Int): List<SyncQueueEntity>
+
+    /** One pending item per kind and target: tells which background runs are needed, however long the queue. */
+    @Query(
+        """SELECT * FROM sync_queue WHERE rowId IN
+           (SELECT MIN(rowId) FROM sync_queue WHERE status = 'PENDING' GROUP BY kind, target)"""
+    )
+    suspend fun pendingKindsAndTargets(): List<SyncQueueEntity>
 
     @Query("SELECT COUNT(*) FROM sync_queue WHERE status = 'FAILED'")
     fun observeFailedCount(): Flow<Int>

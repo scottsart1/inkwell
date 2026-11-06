@@ -47,7 +47,54 @@ class FragmentOpsTest {
         // Everything shrank by the same factor, including sizes.
         val s = b.width / BoardGeometry.contentBounds(fragment)!!.width
         assertEquals(20f * s, fitted.texts.single().fontSizePt, 0.01f)
-        assertEquals(4f * s, fitted.shapes.single().strokeWidth, 0.01f)
+        assertEquals(4f * s, fitted.shapes.first { it.id == "r1" }.strokeWidth, 0.01f)
+    }
+
+    @Test fun boundsIncludeRotation() {
+        val f = PageContent(images = listOf(ImageItem("i", "a.png", 0f, 0f, 400f, 100f, rotation = 90f)))
+        val b = BoardGeometry.contentBounds(f)!!
+        assertEquals(150f, b.left, 0.01f)
+        assertEquals(-150f, b.top, 0.01f)
+        assertEquals(250f, b.right, 0.01f)
+        assertEquals(250f, b.bottom, 0.01f)
+    }
+
+    @Test fun fitIntoKeepsRotatedItemsOnThePage() {
+        // A 400x100 image turned upright, sent to an A4 page inside 47.6pt margins.
+        val f = PageContent(
+            images = listOf(ImageItem("i", "a.png", 0f, 0f, 400f, 100f, rotation = 90f)),
+            texts = listOf(TextItem("t", 500f, 0f, 300f, 40f, "x", rotation = 30f)),
+        )
+        val target = Box(47.6f, 47.6f, 595f - 47.6f, 842f - 47.6f)
+        val fitted = FragmentOps.fitInto(f, target)
+        val b = BoardGeometry.contentBounds(fitted)!!
+        assertEquals(target.top, b.top, 0.01f)
+        assertTrue(b.left >= target.left - eps && b.right <= target.right + eps)
+        assertTrue(b.bottom <= target.bottom + eps)
+        assertEquals(90f, fitted.images.single().rotation, eps)
+    }
+
+    @Test fun fitIntoTurnsStickiesIntoScalableItemsWhenShrinking() {
+        val f = PageContent(
+            stickies = listOf(StickyItem("k", 0f, 0f, width = 2000f, height = 180f, text = "Plan", color = 0xFFAABBCC.toInt(), z = 4)),
+            connectors = listOf(ConnectorItem("c", fromItemId = "k", toX = 10f, toY = 300f)),
+        )
+        val fitted = FragmentOps.fitInto(f, Box(0f, 0f, 500f, 800f))
+        val s = 500f / 2000f
+        assertTrue(fitted.stickies.isEmpty())
+        val box = fitted.shapes.single()
+        assertEquals("k", box.id) // connectors stay attached
+        assertEquals(0xFFAABBCC.toInt(), box.fillColor)
+        assertEquals(6f * s, box.cornerRadius, eps)
+        val text = fitted.texts.single()
+        assertEquals("Plan", text.text)
+        assertEquals(14f * s, text.fontSizePt, eps)
+        assertEquals(10f * s, text.x - box.points[0], eps)
+        assertEquals(1980f * s, text.width, 0.01f)
+        assertEquals(4, text.z)
+        assertTrue(text.groupId != null && text.groupId == box.groupId)
+        // Nothing to shrink: stickies stay stickies.
+        assertEquals(1, FragmentOps.fitInto(f, Box(0f, 0f, 5000f, 5000f)).stickies.size)
     }
 
     @Test fun fitIntoNeverUpscalesByDefault() {
@@ -96,5 +143,14 @@ class FragmentOpsTest {
         )
         assertEquals("first\n\nsecond\n\nthird", FragmentOps.boardText(f))
         assertEquals(setOf("asset.png"), FragmentOps.assetIds(fragment))
+    }
+
+    @Test fun boardTextRowsAboveZeroAreNotMergedWithRowZero() {
+        // Rows are 40pt everywhere: -30 belongs to the row above 0..40.
+        val f = PageContent(
+            texts = listOf(TextItem("a", 500f, -30f, 10f, 10f, "above")),
+            stickies = listOf(StickyItem("b", 0f, 30f, text = "below")),
+        )
+        assertEquals("above\n\nbelow", FragmentOps.boardText(f))
     }
 }

@@ -65,6 +65,8 @@ import kotlin.math.roundToInt
 fun PdfSnippetDialog(ops: BoardOperations, pdfPageSizes: suspend (String) -> List<Pair<Float, Float>>, renderPage: suspend (String, Int, Int, Int) -> Bitmap?, onDismiss: () -> Unit) {
     var pdf by remember { mutableStateOf<DocumentMeta?>(null) }
     var pageIndex by remember { mutableStateOf<Int?>(null) }
+    // Stays open while inserting: closing it would cancel the insert halfway and orphan the saved asset.
+    var working by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val docs by produceState<List<DocumentMeta>?>(null) { value = runCatching { ops.documents(setOf(DocKind.PDF)) }.getOrDefault(emptyList()) }
     val sizes by produceState<List<Pair<Float, Float>>?>(null, pdf) {
@@ -99,17 +101,25 @@ fun PdfSnippetDialog(ops: BoardOperations, pdfPageSizes: suspend (String) -> Lis
         }
         else -> {
             val size = sizes?.getOrNull(currentPage) ?: (595f to 842f)
-            PickerShell(stringResource(R.string.wb_snippet_crop), onDismiss, onBack = { pageIndex = null }) {
+            PickerShell(stringResource(R.string.wb_snippet_crop), { if (!working) onDismiss() }, onBack = { if (!working) pageIndex = null }) {
                 CropStep(
                     renderPreview = { w, h -> renderPage(currentPdf.id, currentPage, w, h) },
                     aspect = if (size.first > 0f && size.second > 0f) size.first / size.second else 0.707f,
-                    busy = ops.isBusy(),
+                    busy = working || ops.isBusy(),
                     onInsert = { crop ->
-                        scope.launch {
-                            if (ops.insertPdfSnippet(currentPdf.id, currentPage, size, crop)) onDismiss()
+                        if (!working) {
+                            working = true
+                            scope.launch {
+                                val ok = try {
+                                    ops.insertPdfSnippet(currentPdf.id, currentPage, size, crop)
+                                } finally {
+                                    working = false
+                                }
+                                if (ok) onDismiss()
+                            }
                         }
                     },
-                    onCancel = onDismiss,
+                    onCancel = { if (!working) onDismiss() },
                 )
             }
         }

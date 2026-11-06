@@ -61,6 +61,15 @@ class FakeSyncQueueDao : SyncQueueDao {
 
     override suspend fun pendingCount(): Int = pendingRows().size
 
+    override suspend fun pendingAfter(afterAt: Long, afterRowId: Long, limit: Int): List<SyncQueueEntity> =
+        pendingRows()
+            .filter { it.enqueuedAt > afterAt || (it.enqueuedAt == afterAt && it.rowId > afterRowId) }
+            .sortedWith(compareBy<SyncQueueEntity>({ it.enqueuedAt }, { it.rowId }))
+            .take(limit)
+
+    override suspend fun pendingKindsAndTargets(): List<SyncQueueEntity> =
+        pendingRows().groupBy { it.kind to it.target }.values.map { rows -> rows.minBy { it.rowId } }
+
     override fun observeFailedCount(): Flow<Int> = rows.map { list -> list.count { it.status == SyncItemStatus.FAILED } }
 
     override suspend fun setOutcome(rowId: Long, status: String, attempts: Int, lastError: String?) {
@@ -123,6 +132,8 @@ class FakeSource(private val tmp: File) : SyncSource {
     var pdfExports = 0
     var audioExports = 0
     var failExport: Throwable? = null
+    /** Runs at the start of every PDF export (to change things in the middle of a run). */
+    var onExport: () -> Unit = {}
 
     override suspend fun document(docId: String) = docs[docId]
     override suspend fun allDocuments() = docs.values.toList()
@@ -143,6 +154,7 @@ class FakeSource(private val tmp: File) : SyncSource {
     override suspend fun markdown(docId: String) = markdowns[docId] ?: "# ${docs[docId]?.title}\n"
 
     override suspend fun exportPdf(docId: String): File {
+        onExport()
         failExport?.let { throw it }
         pdfExports++
         return File(tmp, "export-$docId-$pdfExports.pdf").apply { writeBytes(pdfBytes(docId)) }
@@ -398,7 +410,10 @@ class EngineHarness(
         folders = FolderAccess { uri -> folderAccess.root(uri) },
         network = network,
         state = state,
-        onFolderRevoked = { revoked++; prefs = prefs.withoutFolder() },
+        onFolderRevoked = { uri ->
+            revoked++
+            if (prefs.folderUri == uri) prefs = prefs.withoutFolder()
+        },
         clock = { now },
         io = Dispatchers.Unconfined,
     )

@@ -43,6 +43,9 @@ object CrashText {
     /** The body of a [javaCrash] text, without its time line. */
     fun javaCrashBody(text: String): String = text.substringAfter('\n', "")
 
+    /** The exit time saved next to the report (ms as text), or null when missing or unreadable. */
+    fun savedExitTime(text: String?): Long? = text?.trim()?.toLongOrNull()?.takeIf { it > 0 }
+
     /** True when a Java crash written at [writtenMs] belongs to the process exit at [exitMs]. */
     fun sameCrash(writtenMs: Long, exitMs: Long): Boolean = writtenMs in (exitMs - 120_000)..(exitMs + 10_000)
 

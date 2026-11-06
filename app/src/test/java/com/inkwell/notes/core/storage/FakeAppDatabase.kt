@@ -201,6 +201,7 @@ class FakeAppDatabase : AppDatabase() {
         }
         override suspend fun setSize(id: String, sizeBytes: Long) { tx { documentTable.replace(id) { it.copy(sizeBytes = sizeBytes) } } }
         override suspend fun setThumbnail(id: String, path: String?) { tx { documentTable.replace(id) { it.copy(thumbnailPath = path) } } }
+        override suspend fun setLastSyncedAt(id: String, at: Long) { tx { documentTable.replace(id) { it.copy(lastSyncedAt = at) } } }
     }
 
     private val pageDao = object : PageDao {
@@ -274,6 +275,8 @@ class FakeAppDatabase : AppDatabase() {
         override suspend fun deleteDocument(docId: String) { tx { textIndexTable.removeIf { it.documentId == docId } } }
         override suspend fun searchLive(ftsQuery: String, limit: Int): List<TextSearchRow> = throw UnsupportedOperationException()
         override suspend fun searchLiveLike(needle: String, limit: Int): List<TextSearchRow> = throw UnsupportedOperationException()
+        override suspend fun searchLiveInDocument(ftsQuery: String, docId: String, limit: Int): List<TextSearchRow> = throw UnsupportedOperationException()
+        override suspend fun searchLiveLikeInDocument(needle: String, docId: String, limit: Int): List<TextSearchRow> = throw UnsupportedOperationException()
         override suspend fun liveRowsByIds(rowIds: List<Long>): List<TextSearchRow> = throw UnsupportedOperationException()
         override suspend fun lastUpdated(docId: String, source: String): Long? =
             tx { textIndexTable.all().filter { it.documentId == docId && it.source.name == source }.maxOfOrNull { it.updatedAt } }

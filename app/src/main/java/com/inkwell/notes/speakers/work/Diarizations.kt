@@ -15,11 +15,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import com.inkwell.notes.core.storage.FileStore
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /** Queues, cancels and observes on-device identification of recordings (WorkManager). */
@@ -134,16 +136,24 @@ internal class AwaitingModels(context: Context) {
 internal class NativeRunGuard(context: Context) {
     private val file = File(context.noBackupFilesDir, "speakers/native-runs.json")
 
+    /**
+     * Held for a whole native pass (from [start] to [finish]): one pass at a time in this
+     * process. A run replacing a stopped one waits here until the stopped run's native call
+     * returns, and a native fault can only have happened in the one recording in flight.
+     */
+    val pass = Mutex()
+
     /** May a run of [recordingId] enter native code? Marks it in flight when it may. */
     @Synchronized
     fun start(recordingId: String): Boolean {
-        val d = NativeRunRules.start(load(), recordingId)
+        val d = NativeRunRules.start(load(), recordingId, PROCESS)
         save(d.next)
         return d is NativeRunRules.Decision.Proceed
     }
 
+    /** Clears this process's in-flight mark of [recordingId]; safe to call when none was set. */
     @Synchronized
-    fun finish(recordingId: String, completed: Boolean) = save(NativeRunRules.finish(load(), recordingId, completed))
+    fun finish(recordingId: String, completed: Boolean) = save(NativeRunRules.finish(load(), recordingId, PROCESS, completed))
 
     @Synchronized
     fun reset(recordingId: String) = save(NativeRunRules.reset(load(), recordingId))
@@ -155,5 +165,10 @@ internal class NativeRunGuard(context: Context) {
             if (r.entries.isEmpty()) file.delete()
             else FileStore.writeAtomically(file, keepBackup = false) { it.write(NativeRuns.encode(r).toByteArray()) }
         }.onFailure { Log.w("NativeRunGuard", "Could not save the native run record", it) }
+    }
+
+    private companion object {
+        /** This process start: a mark left by any other value was left by a process that died. */
+        val PROCESS: String = UUID.randomUUID().toString()
     }
 }

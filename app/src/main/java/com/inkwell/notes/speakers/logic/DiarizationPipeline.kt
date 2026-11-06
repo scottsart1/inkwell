@@ -57,6 +57,8 @@ data class DiarizationCheckpoint(
     val voices: List<LocalVoiceInfo> = emptyList(),
     /** Window length of the plan [windowsDone] counts in; another plan means other windows. */
     val windowMs: Long = AudioPlan.MAX_WINDOW_MS,
+    /** Runs that failed (an exception, not a stop) since the last window was analysed. */
+    val failures: Int = 0,
 ) {
     fun matches(modelId: String, files: List<String>, durations: List<Long>, windows: Int, windowMs: Long = AudioPlan.MAX_WINDOW_MS): Boolean =
         version == VERSION && this.windowMs == windowMs && this.modelId == modelId && this.files == files &&

@@ -48,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -259,21 +260,23 @@ private fun MenuEntry(icon: ImageVector, text: String, onClick: () -> Unit) {
 private fun DragToPaneHandle(sink: SelectionDragSink) {
     var origin by remember { mutableStateOf(Offset.Zero) }
     var pos by remember { mutableStateOf(Offset.Zero) }
+    // Keyed on Unit: a recomposition handing in another sink must not cancel a drag in progress.
+    val currentSink by rememberUpdatedState(sink)
     val label = stringResource(R.string.editor_sel_drag_to_pane)
     Box(
         Modifier
             .size(width = 28.dp, height = Dimens.minTouch)
             .onGloballyPositioned { origin = it.boundsInRoot().topLeft }
             .semantics { contentDescription = label }
-            .pointerInput(sink) {
+            .pointerInput(Unit) {
                 detectDragGestures(
-                    onDragStart = { start -> pos = origin + start; sink.start(pos) },
-                    onDragEnd = { sink.end() },
-                    onDragCancel = { sink.cancel() },
+                    onDragStart = { start -> pos = origin + start; currentSink.start(pos) },
+                    onDragEnd = { currentSink.end() },
+                    onDragCancel = { currentSink.cancel() },
                 ) { change, amount ->
                     change.consume()
                     pos += amount
-                    sink.move(pos)
+                    currentSink.move(pos)
                 }
             },
         contentAlignment = Alignment.Center,

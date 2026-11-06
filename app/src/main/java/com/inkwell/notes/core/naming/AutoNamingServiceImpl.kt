@@ -92,7 +92,7 @@ class AutoNamingServiceImpl(private val graph: AppGraph) : AutoNamingService {
 
     private suspend fun nameAutomatically(doc: DocumentMeta, docState: NamingDocState, prefs: NamingPrefs): Boolean {
         val content = collector.collect(doc)
-        val outcome = inference.infer(content, aiNamer(doc.id, prefs), docState.aiFailures, userRequested = false)
+        val outcome = inference.infer(content, aiNamer(doc.id, prefs, background = true), docState.aiFailures, userRequested = false)
         val now = System.currentTimeMillis()
         if (outcome is TopicOutcome.Found) {
             val title = applyIfStillWaiting(doc.id, outcome.topic) ?: return false
@@ -170,9 +170,14 @@ class AutoNamingServiceImpl(private val graph: AppGraph) : AutoNamingService {
         if (delay <= PRECISE_HORIZON_MS) AutoNamingWorker.schedulePrecise(graph.context, delay + PRECISE_SLACK_MS)
     }
 
-    /** The AI caller for naming, or null when AI is off, unavailable, or disabled for naming. */
-    private fun aiNamer(docId: String, prefs: NamingPrefs): TopicInference.AiNamer? {
+    /**
+     * The AI caller for naming, or null when AI is off, unavailable, or disabled for naming. A
+     * [background] run cannot ask first, so it stays on-device keywords while "Confirm before
+     * sending content to AI" is on; user-requested naming is itself the explicit action.
+     */
+    private fun aiNamer(docId: String, prefs: NamingPrefs, background: Boolean = false): TopicInference.AiNamer? {
         if (!prefs.useAi) return null
+        if (background && graph.settings.current.privacy.confirmAiTransmission) return null
         val available = try {
             graph.ai.isAvailable(AiTask.NAMING)
         } catch (e: Exception) {

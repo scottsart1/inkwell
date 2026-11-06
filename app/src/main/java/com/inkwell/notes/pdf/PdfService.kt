@@ -11,6 +11,8 @@ import com.inkwell.notes.core.model.DocumentMeta
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -139,6 +141,7 @@ class PdfServiceImpl(private val graph: AppGraph) : PdfService {
      */
     private suspend fun importPreparedFile(file: File, folderId: String?, title: String?): DocumentMeta {
         val sizes = importer.prepare(file)
+        // Created without cancellation so the id always comes back and a cancel is discarded below.
         val doc = try {
             // Not cancellable on its own: a document committed just as the import is cancelled
             // would otherwise stay in the library without pages. Cancellation is noticed by the
@@ -151,6 +154,7 @@ class PdfServiceImpl(private val graph: AppGraph) : PdfService {
             throw PdfErrors.forWrite(context, e)
         }
         try {
+            currentCoroutineContext().ensureActive()
             engine.replaceSource(doc.id, file)
             library.addPdfPages(doc.id, sizes)
         } catch (c: CancellationException) {
@@ -174,6 +178,12 @@ class PdfServiceImpl(private val graph: AppGraph) : PdfService {
 
     override suspend fun pageText(docId: String, pdfPageIndex: Int): String = text.pageText(docId, pdfPageIndex)
 
+    /** [pageText], but null when the text could not be read for now (see [PdfTextExtractor.pageTextOrNull]). */
+    internal suspend fun pageTextOrNull(docId: String, pdfPageIndex: Int): String? = text.pageTextOrNull(docId, pdfPageIndex)
+
+    /** True when the text layer of [docId]'s page [pdfPageIndex] keeps running out of memory (see [PdfTextExtractor.givenUp]). */
+    internal suspend fun pageTextGivenUp(docId: String, pdfPageIndex: Int): Boolean = text.givenUp(docId, pdfPageIndex)
+
     // ------------------------------------------------------------------ page operations
 
     override suspend fun insertPdf(docId: String, uri: Uri, atIndex: Int?) {
@@ -188,6 +198,7 @@ class PdfServiceImpl(private val graph: AppGraph) : PdfService {
             sourceLocks.getOrPut(docId) { Mutex() }.withLock {
                 val source = files.sourcePdf(docId)
                 val existingCount = existingPdfPageCount(docId, source)
+                val oldSize = source.length()
                 val replacement = if (existingCount > 0) {
                     appendPdf(source, incoming, existingCount, newSizes.size).also { merged = it }
                 } else {
@@ -196,7 +207,18 @@ class PdfServiceImpl(private val graph: AppGraph) : PdfService {
                 }
                 // Once the file is swapped, the pages must follow: no cancellation in between.
                 withContext(NonCancellable) {
+                    val newSize = replacement.length()
                     engine.replaceSource(docId, replacement)
+                    if (existingCount > 0) {
+                        // Existing pages keep their indices: their OCR stays valid for the new file.
+                        // Carried over after the swap, so a result an indexer stores for the old
+                        // size meanwhile is either copied too or dropped (ImageOcrCache.put).
+                        try {
+                            graph.indexing.sourcePdfAppending(docId, oldSize, newSize)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Keeping OCR results failed (${e.javaClass.simpleName})")
+                        }
+                    }
                     text.invalidate(docId)
                     val plan = PdfPageMapping.insertPlan(existingCount, newSizes.size, atIndex, library.getPages(docId).size)
                     library.addPdfPages(docId, newSizes, firstPdfIndex = plan.firstPdfIndex, atIndex = plan.atPageIndex)

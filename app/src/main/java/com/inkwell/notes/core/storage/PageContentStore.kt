@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromByteArray
 import kotlinx.serialization.encodeToByteArray
 import kotlinx.serialization.protobuf.ProtoBuf
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.CRC32
@@ -28,14 +29,21 @@ class PageContentStore(private val files: FileStore) {
     private val locks = ConcurrentHashMap<String, Mutex>()
     private fun lock(pageId: String) = locks.getOrPut(pageId) { Mutex() }
 
-    suspend fun load(docId: String, pageId: String): PageContent = withContext(Dispatchers.IO) {
+    /**
+     * The stored content of a page; a page without any file is empty. A page whose files exist but
+     * neither the file nor its backup can be read also loads as empty, unless [strict] is set: then
+     * it throws [UnreadablePageException], so an editor refuses to save over bytes that may still
+     * be recoverable.
+     */
+    suspend fun load(docId: String, pageId: String, strict: Boolean = false): PageContent = withContext(Dispatchers.IO) {
         lock(pageId).withLock {
             val file = files.pageFile(docId, pageId)
+            val backup = FileStore.backupOf(file)
             decodeFile(file.takeIf { it.exists() }?.readBytes())
-                ?: decodeFile(FileStore.backupOf(file).takeIf { it.exists() }?.readBytes()).also {
+                ?: decodeFile(backup.takeIf { it.exists() }?.readBytes()).also {
                     if (it != null) Log.w(TAG, "Recovered page $pageId from backup")
                 }
-                ?: PageContent.EMPTY
+                ?: if (strict && (file.exists() || backup.exists())) throw UnreadablePageException(pageId) else PageContent.EMPTY
         }
     }
 
@@ -51,6 +59,7 @@ class PageContentStore(private val files: FileStore) {
             val f = files.pageFile(docId, pageId)
             f.delete()
             FileStore.backupOf(f).delete()
+            FileStore.tempOf(f).delete()
         }
     }
 
@@ -122,3 +131,6 @@ class PageContentStore(private val files: FileStore) {
         }
     }
 }
+
+/** A page has a stored file, but neither it nor its backup could be read. */
+class UnreadablePageException(pageId: String) : IOException("Page $pageId is unreadable")

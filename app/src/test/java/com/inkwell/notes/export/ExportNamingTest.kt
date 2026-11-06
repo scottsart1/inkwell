@@ -165,8 +165,46 @@ class ExportNamingTest {
             } finally {
                 dir3.deleteRecursively()
             }
+            // When the limit is the free space, running into it means the device is full.
+            val dir4 = Files.createTempDirectory("zip-safety").toFile()
+            try {
+                ZipSafety.extract(
+                    ZipInputStream(ByteArrayInputStream(zipOf("big.bin" to ByteArray(5_000)))), dir4, 1_000,
+                    overBytes = com.inkwell.notes.export.backup.PackageException.Reason.NO_SPACE,
+                )
+                throw AssertionError("expected size limit")
+            } catch (e: com.inkwell.notes.export.backup.PackageException) {
+                assertEquals(com.inkwell.notes.export.backup.PackageException.Reason.NO_SPACE, e.reason)
+            } finally {
+                dir4.deleteRecursively()
+            }
         } finally {
             dir.deleteRecursively()
         }
+    }
+
+    @Test fun partialBackupsAreNeverKeptOrRestoredAsBackups() {
+        val cal = Calendar.getInstance(TimeZone.getDefault(), Locale.ROOT).apply { set(2026, Calendar.OCTOBER, 16, 9, 5, 0) }
+        val partial = BackupNaming.partialFileName(cal.timeInMillis)
+        assertEquals("Inkwell-backup-partial-20261016-0905.zip", partial)
+        assertFalse(BackupNaming.isBackupName(partial))
+        assertTrue(BackupNaming.isPartialName(partial))
+        assertTrue(BackupNaming.isPartialName("Inkwell-backup-partial-20261016-0905 (1).zip"))
+        assertFalse(BackupNaming.isPartialName(BackupNaming.fileName(cal.timeInMillis)))
+
+        data class F(val name: String, val modified: Long)
+        val hour = 60L * 60 * 1000
+        val now = 100 * hour
+        val files = listOf(
+            F("Inkwell-backup-partial-20261001-0100.zip", now - 30 * hour), // killed run
+            F("Inkwell-backup-partial-20261016-0905.zip", now - hour), // possibly still running
+            F("Inkwell-backup-partial-20261002-0100.zip", 0), // provider without times
+            F("Inkwell-backup-20261001-0100.zip", now - 30 * hour),
+            F("partial.zip", now - 30 * hour),
+        )
+        val stale = BackupNaming.stalePartials(files, { it.name }, { it.modified }, now, 24 * hour)
+        assertEquals(listOf("Inkwell-backup-partial-20261001-0100.zip"), stale.map { it.name })
+        // Partial files never count towards the backups that are kept.
+        assertTrue(BackupNaming.toDelete(files, { it.name }, { it.modified }, keep = 1).isEmpty())
     }
 }

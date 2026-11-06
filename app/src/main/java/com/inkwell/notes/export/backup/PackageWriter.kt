@@ -24,7 +24,7 @@ import kotlin.coroutines.coroutineContext
 internal class PackageWriter(private val graph: AppGraph) {
     private val source = DocSource(graph)
 
-    suspend fun write(docId: String, out: OutputStream, includeAudio: Boolean) = withContext(Dispatchers.IO) {
+    suspend fun write(docId: String, out: OutputStream, includeAudio: Boolean): Unit = withContext(Dispatchers.IO) {
         val doc = source.document(docId)
         val pages = source.pages(docId)
         val pageRows = graph.db.pages().forDocument(docId).associateBy { it.id }
@@ -96,28 +96,28 @@ internal class PackageWriter(private val graph: AppGraph) {
             text = text,
         )
 
-        val zip = ZipOutputStream(NonClosingOutputStream(out))
-        zip.setLevel(Deflater.DEFAULT_COMPRESSION)
-        zip.putNextEntry(ZipEntry(PackageManifest.MANIFEST))
-        zip.write(PackageManifest.encode(manifest).toByteArray(Charsets.UTF_8))
-        zip.closeEntry()
-        for (p in pages) {
-            coroutineContext.ensureActive()
-            val content = graph.pageStore.load(docId, p.id)
-            zip.putNextEntry(ZipEntry(PackageManifest.pagePath(p.id)))
-            zip.write(PageContentStore.encode(content))
+        // Closing finishes the zip and frees its Deflater; [out] is only flushed.
+        ZipOutputStream(NonClosingOutputStream(out)).use { zip ->
+            zip.setLevel(Deflater.DEFAULT_COMPRESSION)
+            zip.putNextEntry(ZipEntry(PackageManifest.MANIFEST))
+            zip.write(PackageManifest.encode(manifest).toByteArray(Charsets.UTF_8))
             zip.closeEntry()
+            for (p in pages) {
+                coroutineContext.ensureActive()
+                val content = graph.pageStore.load(docId, p.id)
+                zip.putNextEntry(ZipEntry(PackageManifest.pagePath(p.id)))
+                zip.write(PageContentStore.encode(content))
+                zip.closeEntry()
+            }
+            for (a in assets) copyFile(zip, PackageManifest.assetPath(a.name), a, compress = false)
+            sourcePdf?.let { copyFile(zip, PackageManifest.SOURCE_PDF, it, compress = true) }
+            typed?.let { copyFile(zip, PackageManifest.TYPED, it, compress = true) }
+            for ((path, f) in audioFiles) {
+                coroutineContext.ensureActive()
+                copyFile(zip, path, f, compress = f.name.endsWith(".bin"))
+            }
+            thumb?.let { copyFile(zip, PackageManifest.THUMBNAIL, it, compress = false) }
         }
-        for (a in assets) copyFile(zip, PackageManifest.assetPath(a.name), a, compress = false)
-        sourcePdf?.let { copyFile(zip, PackageManifest.SOURCE_PDF, it, compress = true) }
-        typed?.let { copyFile(zip, PackageManifest.TYPED, it, compress = true) }
-        for ((path, f) in audioFiles) {
-            coroutineContext.ensureActive()
-            copyFile(zip, path, f, compress = f.name.endsWith(".bin"))
-        }
-        thumb?.let { copyFile(zip, PackageManifest.THUMBNAIL, it, compress = false) }
-        zip.finish()
-        zip.flush()
     }
 
     /** Media is stored with deflate level 0: already compressed, so only copied. */

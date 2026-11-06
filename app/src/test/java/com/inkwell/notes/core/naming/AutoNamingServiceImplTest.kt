@@ -88,6 +88,11 @@ class AutoNamingServiceImplTest {
     }
 
     private suspend fun status(id: String) = h.repo.getDocument(id)!!.autoNameStatus
+
+    /** Background naming may only send content once "Confirm before sending content to AI" is off. */
+    private suspend fun allowBackgroundAi() {
+        h.settings.update { it.copy(privacy = it.privacy.copy(confirmAiTransmission = false)) }
+    }
     private suspend fun title(id: String) = h.repo.getDocument(id)!!.title
 
     @Test fun nothingIsRenamedBeforeTheWindowAndEverythingDueIsRenamedAfter() = runTest {
@@ -105,6 +110,7 @@ class AutoNamingServiceImplTest {
     }
 
     @Test fun theConfiguredModelIsUsedAndItsAnswerCleaned() = runTest {
+        allowBackgroundAi()
         ai.available = true
         ai.reply = { "Topic: \"Central Bank Policy.\"" }
         val due = notebook(hoursAgo = 30.0)
@@ -117,6 +123,7 @@ class AutoNamingServiceImplTest {
     }
 
     @Test fun offlineModelQueuesTheDocumentAndLocalInferenceTakesOverAfterThreeFailures() = runTest {
+        allowBackgroundAi()
         ai.available = true
         ai.reply = { throw IOException("offline") }
         val due = notebook(hoursAgo = 30.0)
@@ -182,6 +189,7 @@ class AutoNamingServiceImplTest {
     }
 
     @Test fun aRenameByTheUserDuringAnalysisWins() = runTest {
+        allowBackgroundAi()
         ai.available = true
         val due = notebook(hoursAgo = 30.0)
         ai.reply = {
@@ -192,6 +200,19 @@ class AutoNamingServiceImplTest {
         assertEquals(0, service.runDue())
         assertEquals("Mine", title(due.id))
         assertEquals(AutoNameStatus.MANUAL, status(due.id))
+    }
+
+    @Test fun backgroundNamingSendsNothingWhileConfirmationIsOn() = runTest {
+        // Defaults: AI naming on, "Confirm before sending content to AI" on. A background run cannot ask.
+        ai.available = true
+        val due = notebook(hoursAgo = 30.0)
+        assertEquals(1, service.runDue())
+        assertEquals(0, ai.calls)
+        assertEquals("${DateNaming.datePrefix(due.createdAt)}_Monetary Policy", title(due.id))
+        // Asking for a name is an explicit action and may use the model.
+        val other = notebook(hoursAgo = 1.0)
+        assertEquals("${DateNaming.datePrefix(other.createdAt)}_Physics", service.renameNow(other.id))
+        assertEquals(1, ai.calls)
     }
 
     @Test fun renameNowWorksForImportedDocumentsAndSuggestDoesNotRename() = runTest {

@@ -172,4 +172,15 @@ class ContentModelEdgeCasesTest {
         assertEquals(5f, oe[0], 0f); assertEquals(8f, oe[3], 0f)
         assertNotNull(ItemGeometry.bounds(orphan, Bounds(), page))
     }
+
+    @Test fun stackFromKeepsRelativeOrderOfTypeGroupedItems() {
+        // A pasted fragment: a stroke above an image, a second stroke sharing the image's z.
+        val over = TestInk.line("over", 0f, 0f, 10f, 0f, z = 7)
+        val tied = TestInk.line("tied", 0f, 5f, 10f, 5f, z = 3)
+        val img = ImageItem("img", "a", 0f, 0f, 10f, 10f, z = 3)
+        val out = ContentOps.stackFrom(ContentOps.allItems(PageContent(strokes = listOf(over, tied), images = listOf(img))), 20)
+        val zs = out.associate { Items.id(it) to Items.z(it) }
+        assertEquals(mapOf("over" to 21, "tied" to 20, "img" to 20), zs)
+        assertEquals(listOf("over", "tied", "img"), out.map { Items.id(it) })
+    }
 }

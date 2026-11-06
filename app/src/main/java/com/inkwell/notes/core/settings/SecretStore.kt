@@ -96,6 +96,6 @@ class SecretStore(context: Context) {
         fun aiKey(provider: com.inkwell.notes.core.model.AiProviderId) = "ai.key.${provider.name}"
 
         /** Left behind by versions with the notes vault (removed); deleted at start-up. */
-        val LEGACY_VAULT_SECRETS = listOf("vault.password", "vault.session")
+        val LEGACY_VAULT_SECRETS = listOf("vault.password", "vault.session", "vault.password.vault")
     }
 }

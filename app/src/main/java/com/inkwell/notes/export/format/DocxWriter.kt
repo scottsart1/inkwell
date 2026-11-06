@@ -1,5 +1,6 @@
 package com.inkwell.notes.export.format
 
+import com.inkwell.notes.export.backup.NonClosingOutputStream
 import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -34,26 +35,26 @@ class DocxWriter(private val images: DocxImageSource) {
     private class Rel(val id: String, val type: String, val target: String, val external: Boolean = false)
 
     suspend fun write(doc: ExportDocument, out: OutputStream, createdAt: Long? = null, modifiedAt: Long? = null) {
-        val zip = ZipOutputStream(out)
-        zip.setLevel(6)
+        // Closing finishes the zip and frees its Deflater; the caller's stream is only flushed.
+        ZipOutputStream(NonClosingOutputStream(out)).use { zip ->
+            zip.setLevel(6)
 
-        paragraph(style = "Title", runs = runsOf(doc.title.ifBlank { "Untitled" }))
-        for (section in doc.sections) {
-            if (section.heading != null) paragraph(style = "Heading1", runs = runsOf(section.heading))
-            for (block in section.blocks) writeBlock(zip, block)
+            paragraph(style = "Title", runs = runsOf(doc.title.ifBlank { "Untitled" }))
+            for (section in doc.sections) {
+                if (section.heading != null) paragraph(style = "Heading1", runs = runsOf(section.heading))
+                for (block in section.blocks) writeBlock(zip, block)
+            }
+            body.append(SECT_PR)
+
+            zip.entry("[Content_Types].xml", contentTypes())
+            zip.entry("_rels/.rels", PACKAGE_RELS)
+            zip.entry("docProps/core.xml", coreProps(doc.title, createdAt, modifiedAt))
+            zip.entry("docProps/app.xml", APP_PROPS)
+            zip.entry("word/document.xml", DOC_OPEN + body + DOC_CLOSE)
+            zip.entry("word/styles.xml", STYLES)
+            zip.entry("word/numbering.xml", numbering())
+            zip.entry("word/_rels/document.xml.rels", documentRels())
         }
-        body.append(SECT_PR)
-
-        zip.entry("[Content_Types].xml", contentTypes())
-        zip.entry("_rels/.rels", PACKAGE_RELS)
-        zip.entry("docProps/core.xml", coreProps(doc.title, createdAt, modifiedAt))
-        zip.entry("docProps/app.xml", APP_PROPS)
-        zip.entry("word/document.xml", DOC_OPEN + body + DOC_CLOSE)
-        zip.entry("word/styles.xml", STYLES)
-        zip.entry("word/numbering.xml", numbering())
-        zip.entry("word/_rels/document.xml.rels", documentRels())
-        zip.finish()
-        zip.flush()
     }
 
     // ------------------------------------------------------------------ Blocks

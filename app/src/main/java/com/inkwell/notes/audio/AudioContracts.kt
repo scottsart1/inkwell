@@ -22,7 +22,11 @@ sealed interface RecordingState {
         /** Current input level 0..1 for the activity indicator. */
         val level: Float,
     ) : RecordingState
-    data class Error(val message: String) : RecordingState
+    /**
+     * [at] tells failures apart: a repeated failure with the same message is a new state, so a
+     * StateFlow emits it again and the error shows again.
+     */
+    data class Error(val message: String, val at: Long = System.nanoTime()) : RecordingState
 }
 
 /**

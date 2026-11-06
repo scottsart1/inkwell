@@ -3,6 +3,7 @@ package com.inkwell.notes.editor.ui
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.view.View
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.input.key.Key
@@ -31,13 +32,26 @@ fun Context.findActivity(): Activity? {
     return null
 }
 
+/**
+ * Screens asking each root view to stay on (main thread). Navigation composes the incoming and
+ * outgoing screen together, so the outgoing one must not clear a flag the incoming one set.
+ */
+private val keepScreenOnHolds = java.util.WeakHashMap<View, Int>()
+
 /** Keeps the screen on while an editor is visible. */
 @Composable
 fun KeepScreenOn(enabled: Boolean) {
     val view = LocalView.current
     DisposableEffect(view, enabled) {
-        view.keepScreenOn = enabled
-        onDispose { view.keepScreenOn = false }
+        if (enabled) keepScreenOnHolds[view] = (keepScreenOnHolds[view] ?: 0) + 1
+        view.keepScreenOn = (keepScreenOnHolds[view] ?: 0) > 0
+        onDispose {
+            if (enabled) {
+                val left = (keepScreenOnHolds[view] ?: 1) - 1
+                if (left > 0) keepScreenOnHolds[view] = left else keepScreenOnHolds.remove(view)
+            }
+            view.keepScreenOn = (keepScreenOnHolds[view] ?: 0) > 0
+        }
     }
 }
 

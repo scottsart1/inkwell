@@ -60,9 +60,9 @@ internal class GraphSyncSource(private val graph: AppGraph) : SyncSource {
 
     override suspend fun markSynced(docId: String, at: Long) {
         try {
-            // Re-read right before writing so a concurrent edit (title, tags...) is never undone.
-            val current = graph.library.getDocument(docId) ?: return
-            graph.library.updateDocument(current.copy(lastSyncedAt = at))
+            // Only this column: writing the whole document back could undo a concurrent edit
+            // (title, folder, tags...) or bring back a document deleted meanwhile.
+            graph.db.documents().setLastSyncedAt(docId, at)
         } catch (e: Exception) {
             Log.w("InkwellSync", "Couldn't record the sync time: ${e.javaClass.simpleName}")
         }
@@ -91,14 +91,51 @@ internal class PrefsSyncStateStore(context: Context) : SyncStateStore {
         get() = prefs.getString(KEY_DRIVE_ROOT, null)
         set(value) = prefs.edit().apply { if (value == null) remove(KEY_DRIVE_ROOT) else putString(KEY_DRIVE_ROOT, value) }.apply()
 
-    override fun folderLocation(docId: String): List<String>? =
-        locations.getString(docId, null)?.split(SEP)?.filter { it.isNotEmpty() }?.takeIf { it.isNotEmpty() }
+    /** Locations live under "<folder tree URI><SEP><document id>", so each folder keeps its own. */
+    private fun key(folder: String, docId: String) = folder + SEP + docId
 
-    override fun setFolderLocation(docId: String, segments: List<String>?) {
-        locations.edit().apply { if (segments == null) remove(docId) else putString(docId, segments.joinToString(SEP)) }.apply()
+    @Volatile private var legacyAdopted = false
+
+    /**
+     * Locations saved before they were kept per folder (key = document id) belong to the folder
+     * chosen at that time, which is the one sync uses first after the update: [folder] takes them.
+     */
+    @Synchronized
+    private fun adoptLegacy(folder: String) {
+        if (legacyAdopted) return
+        legacyAdopted = true
+        val legacy = locations.all.filterKeys { !it.contains(SEP) }
+        if (legacy.isEmpty()) return
+        locations.edit().apply {
+            for ((docId, value) in legacy) {
+                remove(docId)
+                if (value is String) putString(key(folder, docId), value)
+            }
+        }.apply()
     }
 
-    fun clearAllLocations() = locations.edit().clear().apply()
+    override fun folderLocation(folder: String, docId: String): List<String>? {
+        adoptLegacy(folder)
+        return decode(locations.getString(key(folder, docId), null))
+    }
+
+    override fun folderLocations(folder: String): Map<String, List<String>> {
+        adoptLegacy(folder)
+        val prefix = folder + SEP
+        return locations.all.mapNotNull { (k, value) ->
+            if (!k.startsWith(prefix)) return@mapNotNull null
+            decode(value as? String)?.let { k.substring(prefix.length) to it }
+        }.toMap()
+    }
+
+    private fun decode(stored: String?): List<String>? =
+        stored?.split(SEP)?.filter { it.isNotEmpty() }?.takeIf { it.isNotEmpty() }
+
+    override fun setFolderLocation(folder: String, docId: String, segments: List<String>?) {
+        adoptLegacy(folder)
+        val k = key(folder, docId)
+        locations.edit().apply { if (segments == null) remove(k) else putString(k, segments.joinToString(SEP)) }.apply()
+    }
 
     override fun driveDocFolder(docId: String): String? = driveFolders.getString(docId, null)
 

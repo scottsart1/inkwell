@@ -115,6 +115,11 @@ class TranscriptionWorker(appContext: Context, params: WorkerParameters) : Corou
                 if (plan.cloud) speakers = speakers.copy(voices = CloudTurns.refresh(speakers.voices, checkpoint.segments))
                 val snapshot = checkpoint
                 val speakerSnapshot = speakers
+                if (recordings.get(recordingId) == null) {
+                    // Deleted meanwhile (with its document): leave nothing of it on disk.
+                    withContext(Dispatchers.IO) { checkpointFile.delete() }
+                    return Result.failure(failureData(R.string.audio_no_audio))
+                }
                 withContext(Dispatchers.IO) { writeCheckpoint(checkpointFile, snapshot, speakerSnapshot) }
                 setProgress(workDataOf(Transcriptions.KEY_DONE to i + 1, Transcriptions.KEY_TOTAL to files.size))
             }
@@ -165,6 +170,8 @@ class TranscriptionWorker(appContext: Context, params: WorkerParameters) : Corou
             return retryOrFail(graph, recordingId, retryable = true, message = null)
         } catch (e: Exception) {
             Log.e(TAG, "Transcription crashed", e)
+            // E.g. the transcript no longer fits a recording deleted meanwhile: drop its progress too.
+            if (hookValue { recordings.get(recordingId) == null } == true) withContext(Dispatchers.IO) { checkpointFile.delete() }
             return retryOrFail(graph, recordingId, retryable = false, message = null)
         }
     }
@@ -216,6 +223,8 @@ class TranscriptionWorker(appContext: Context, params: WorkerParameters) : Corou
         if (!file.isFile) null else runCatching { JobCheckpoint.decode(file.readText()) }.getOrNull()
 
     private fun writeCheckpoint(file: File, c: TranscriptCheckpoint, speakers: CloudSpeakerState) {
+        // Never recreate the recording's folder once it was deleted (writeAtomically would).
+        if (file.parentFile?.isDirectory != true) return
         runCatching {
             FileStore.writeAtomically(file, keepBackup = false) { it.write(JobCheckpoint.encode(c, speakers).toByteArray()) }
         }.onFailure { Log.w(TAG, "Could not save transcription progress", it) }

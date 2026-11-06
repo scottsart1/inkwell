@@ -10,6 +10,7 @@ import androidx.core.app.NotificationManagerCompat
 import com.inkwell.notes.InkwellApp
 import com.inkwell.notes.MainActivity
 import com.inkwell.notes.R
+import com.inkwell.notes.app.AppGraph
 import com.inkwell.notes.audio.RecordingService
 import com.inkwell.notes.audio.logic.AudioText
 import com.inkwell.notes.ui.theme.LightInkwell
@@ -22,7 +23,18 @@ internal class RecordingNotifications(private val context: Context) {
         val docTitle = content?.docTitle?.ifBlank { null } ?: context.getString(R.string.audio_untitled_doc)
         val time = AudioText.clock((content?.elapsedSeconds ?: 0L) * 1000)
         val paused = content?.paused == true
-        val title = context.getString(if (paused) R.string.audio_notif_paused else R.string.audio_notif_recording, docTitle, time)
+        // The document name stays off the lock screen, and out of the notification entirely with app lock on.
+        val generic = context.getString(if (paused) R.string.audio_notif_paused_generic else R.string.audio_notif_recording_generic, time)
+        val title = if (appLocked()) generic
+        else context.getString(if (paused) R.string.audio_notif_paused else R.string.audio_notif_recording, docTitle, time)
+        val publicVersion = base(generic, content, paused).build()
+        return base(title, content, paused)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion)
+            .build()
+    }
+
+    private fun base(title: String, content: Content?, paused: Boolean): NotificationCompat.Builder {
         val builder = NotificationCompat.Builder(context, InkwellApp.CHANNEL_RECORDING)
             .setSmallIcon(R.drawable.ic_stat_record)
             .setContentTitle(title)
@@ -36,7 +48,6 @@ internal class RecordingNotifications(private val context: Context) {
             .setLocalOnly(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
         if (content != null) {
             if (paused) {
@@ -46,8 +57,10 @@ internal class RecordingNotifications(private val context: Context) {
             }
             builder.addAction(0, context.getString(R.string.audio_notif_stop), serviceAction(RecordingService.ACTION_STOP, REQ_STOP))
         }
-        return builder.build()
+        return builder
     }
+
+    private fun appLocked(): Boolean = runCatching { AppGraph.get(context).settings.current.privacy.appLock }.getOrDefault(false)
 
     /** Replaces the posted notification; silently skipped when notifications are not allowed. */
     fun update(content: Content) {

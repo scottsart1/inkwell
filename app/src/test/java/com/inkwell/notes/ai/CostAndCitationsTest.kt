@@ -56,7 +56,9 @@ class CostAndCitationsTest {
         val spec = h.models.spec(opus)
         assertEquals(4.0 + 20.0, CostCalculator.tokens(spec, 1_000_000, 1_000_000)!!, 1e-9)
         val haiku = h.models.spec(ModelRef(AiProviderId.ANTHROPIC, "claude-haiku-5-5"))
-        assertEquals(0.10 + 0.50, CostCalculator.tokens(haiku, 1_000_000, 1_000_000)!!, 1e-9)
+        assertEquals(0.10 * 0.1 + 0.50, CostCalculator.tokens(haiku, 100_000, 1_000_000)!!, 1e-9)
+        // Over 100K input tokens the whole request is billed at the long-context prices.
+        assertEquals(0.50 + 2.50, CostCalculator.tokens(haiku, 1_000_000, 1_000_000)!!, 1e-9)
         val fable = h.models.spec(ModelRef(AiProviderId.ANTHROPIC, "claude-fable-5-1"))
         assertEquals(10.0, fable.inputUsdPerMTok!!, 0.0)
         assertEquals(50.0, fable.outputUsdPerMTok!!, 0.0)

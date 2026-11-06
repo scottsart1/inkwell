@@ -52,8 +52,9 @@ object MarkdownWriter {
                 }
                 is ExportBlock.Table -> writeTable(out, block.rows)
                 is ExportBlock.Image -> {
-                    out.append("![").append(escapeInline(block.caption.replace('\n', ' '))).append("](")
-                        .append(linkTarget("assets/" + block.assetId)).append(")\n")
+                    // The asset is not exported next to the .md, so a link would never resolve: name the image instead.
+                    val caption = block.caption.replace('\n', ' ').trim()
+                    out.append('*').append(escapeInline(if (caption.isEmpty()) "[Image]" else "[Image: $caption]")).append("*\n")
                 }
                 ExportBlock.Divider -> out.append("---\n")
                 is ExportBlock.PageImage -> Unit // Word only.

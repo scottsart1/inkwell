@@ -8,6 +8,7 @@ import com.inkwell.notes.core.storage.db.AppDatabase
 import com.inkwell.notes.core.storage.db.TextIndexEntity
 import com.inkwell.notes.ocr.text.Bounds
 import com.inkwell.notes.ocr.text.IndexText
+import com.inkwell.notes.ocr.text.ReadingOrder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -40,6 +41,12 @@ internal class IndexWriter(private val db: AppDatabase, private val clock: () ->
                 db.textIndex().deleteDocument(docId)
                 return@withTransaction
             }
+            // The page may have been deleted (or moved) while its text was being recognised.
+            if (pageId != ReadingOrder.TYPED_PAGE && db.pages().get(pageId)?.documentId != docId) {
+                for (source in TextSource.entries) db.textIndex().deleteFor(docId, pageId, source.name)
+                db.embeddings().deleteStaleForDocument(docId)
+                return@withTransaction
+            }
             for ((source, list) in rows) db.textIndex().replace(docId, pageId, source.name, list)
             db.embeddings().deleteStaleForDocument(docId)
         }
@@ -61,14 +68,18 @@ internal class IndexWriter(private val db: AppDatabase, private val clock: () ->
         )
     }
 
-    /** Title and tags; folder names are matched live at search time. */
+    /**
+     * Title and tags; folder names are matched live at search time. They are read again inside
+     * the transaction, so a refresh that started before a quick second rename cannot write the
+     * older title last.
+     */
     suspend fun replaceMeta(doc: DocumentMeta) = withContext(Dispatchers.IO) {
         val now = clock()
-        val rows = ArrayList<TextIndexEntity>()
-        clean(doc.title)?.let { rows += metaRow(doc.id, TextSource.TITLE, it, now) }
-        doc.tags.mapNotNull { clean(it) }.distinctBy { it.lowercase() }.forEach { rows += metaRow(doc.id, TextSource.TAG, it, now) }
         db.withTransaction {
-            if (db.documents().get(doc.id) == null) return@withTransaction
+            val current = db.documents().get(doc.id)?.toModel() ?: return@withTransaction
+            val rows = ArrayList<TextIndexEntity>()
+            clean(current.title)?.let { rows += metaRow(current.id, TextSource.TITLE, it, now) }
+            current.tags.mapNotNull { clean(it) }.distinctBy { it.lowercase() }.forEach { rows += metaRow(current.id, TextSource.TAG, it, now) }
             db.textIndex().deleteFor(doc.id, null, TextSource.TITLE.name)
             db.textIndex().deleteFor(doc.id, null, TextSource.TAG.name)
             if (rows.isNotEmpty()) db.textIndex().insertAll(rows)
@@ -96,7 +107,10 @@ internal class IndexWriter(private val db: AppDatabase, private val clock: () ->
             }
             db.withTransaction {
                 db.textIndex().deleteForRecording(recordingId)
-                if (rows.isNotEmpty() && db.documents().get(docId) != null) db.textIndex().insertAll(rows)
+                // The recording may have been deleted while it was transcribed or renamed.
+                if (rows.isNotEmpty() && db.documents().get(docId) != null && db.recordings().get(recordingId) != null) {
+                    db.textIndex().insertAll(rows)
+                }
                 db.embeddings().deleteStaleForDocument(docId)
             }
         }

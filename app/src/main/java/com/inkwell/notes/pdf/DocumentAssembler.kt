@@ -9,9 +9,12 @@ import com.inkwell.notes.core.model.Orientation
 import com.inkwell.notes.core.model.PageMeta
 import com.inkwell.notes.core.model.PageSizePreset
 import com.inkwell.notes.core.model.PageTemplate
+import com.inkwell.notes.core.storage.PageOrdering
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -120,6 +123,7 @@ internal class DocumentAssembler(
         // Build the new PDF first, so a failure here never creates a library entry.
         val pdf = if (compaction.keep.isEmpty()) null else buildSubset(compaction.keep)
         try {
+            // Created without cancellation so the id always comes back and a cancel is discarded below.
             val created = try {
                 // Not cancellable on its own: a document committed just as the operation is
                 // cancelled would stay behind empty; populate() notices the cancellation and
@@ -132,6 +136,7 @@ internal class DocumentAssembler(
                 throw PdfErrors.forWrite(context, e)
             }
             try {
+                currentCoroutineContext().ensureActive()
                 populate(created.id, sources, compaction.remapped, pdf)
             } catch (c: CancellationException) {
                 withContext(NonCancellable) { discard(created.id) }
@@ -220,9 +225,16 @@ internal class DocumentAssembler(
         if (src.bookmarked) library.setBookmark(dst.id, true, src.bookmarkTitle)
     }
 
-    /** Copies ink and other items plus the image files they reference. Returns false for empty pages. */
+    /**
+     * Copies ink and other items plus the image files they reference. Returns false for empty pages.
+     * Audio links are dropped: the recordings belong to the source document.
+     *
+     * A page whose stored content cannot be read throws [com.inkwell.notes.core.storage.UnreadablePageException]
+     * instead of being copied as blank, so the operation is abandoned and a split never deletes
+     * the only (possibly recoverable) copy of that page.
+     */
     private suspend fun copyContent(fromDoc: String, fromPage: String, toDoc: String, toPage: String): Boolean {
-        val content = graph.pageStore.load(fromDoc, fromPage)
+        val content = graph.pageStore.load(fromDoc, fromPage, strict = true)
         if (content.isEmpty) return false
         withContext(Dispatchers.IO) {
             for (assetId in content.images.map { it.assetId }.distinct()) {
@@ -231,7 +243,7 @@ internal class DocumentAssembler(
                 if (from.isFile && !to.exists()) from.copyTo(to)
             }
         }
-        graph.pageStore.save(toDoc, toPage, content)
+        graph.pageStore.save(toDoc, toPage, if (fromDoc == toDoc) content else PageOrdering.withoutAudio(content))
         return true
     }
 

@@ -33,6 +33,7 @@ import com.inkwell.notes.core.model.AiUsage
 import com.inkwell.notes.core.model.AppSettings
 import com.inkwell.notes.core.model.DocKind
 import com.inkwell.notes.core.model.ModelRef
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -77,6 +78,8 @@ internal data class PendingSend(
     val persistUser: Boolean = true,
     val noticeAccepted: Boolean = false,
     val sizeConfirmed: Boolean = false,
+    /** Assistant message this answer regenerates; deleted only once the new answer is stored. */
+    val replaces: String? = null,
 )
 
 internal data class PanelError(val message: String, val retry: PendingSend? = null)
@@ -399,6 +402,11 @@ internal class AiPanelViewModel(private val graph: AppGraph, val docId: String) 
                                     val item = chats.add(tid, docId, AiRole.ASSISTANT, e.text, e.model, p.context.sources)
                                     if (notes.isNotEmpty()) messageNotes[item.id] = notes
                                     if (e.reasoning.isNotBlank()) messageReasoning[item.id] = e.reasoning
+                                    p.replaces?.let { old ->
+                                        runCatching { chats.delete(old) }
+                                        messageNotes.remove(old)
+                                        messageReasoning.remove(old)
+                                    }
                                 }
                             }
                         }
@@ -409,8 +417,15 @@ internal class AiPanelViewModel(private val graph: AppGraph, val docId: String) 
                     }
                     streaming = reply
                 }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                // An unexpected engine error must not crash the app from viewModelScope.
+                finished = true
+                error = PanelError("Something went wrong talking to ${p.model.provider.displayName}. Try again.", p.copy(persistUser = false))
             } finally {
-                if (!finished && stopRequested && reply.text.isNotBlank()) {
+                // A stopped regeneration keeps the complete answer it was replacing instead of adding a partial
+                // second answer to the same question.
+                if (!finished && stopRequested && p.replaces == null && reply.text.isNotBlank()) {
                     withContext(NonCancellable) {
                         runCatching {
                             val item = chats.add(tid, docId, AiRole.ASSISTANT, reply.text, p.model, p.context.sources)
@@ -437,34 +452,31 @@ internal class AiPanelViewModel(private val graph: AppGraph, val docId: String) 
         start(p.copy(noticeAccepted = true, sizeConfirmed = true))
     }
 
-    /** Regenerates an assistant answer from the user turn before it, with the current context. */
+    /**
+     * Regenerates an assistant answer from the user turn before it, with the current context. The old
+     * answer stays until the new one is stored, so a cancelled notice or a failed request loses nothing.
+     */
     fun regenerate(messageId: String) {
         if (busy) return
         val list = messages.value
         val idx = list.indexOfFirst { it.id == messageId }
         if (idx < 0) return
+        // The new answer is appended at the end of the thread: only the answer to the last turn can be replaced.
+        if (list.subList(idx + 1, list.size).any { it.role == AiRole.USER }) return
         val user = list.subList(0, idx).lastOrNull { it.role == AiRole.USER } ?: return
         error = null
         viewModelScope.launch {
             preparing = true
             try {
-                chats?.delete(messageId)
-                messageNotes.remove(messageId)
-                messageReasoning.remove(messageId)
-                // Wait for the deletion to reach the observed list so history excludes the old answer.
-                snapshotFlowMessages { msgs -> msgs.none { it.id == messageId } }
                 val action = quickActionFor(user.text)
-                val historyCut = messages.value.takeWhile { it.id != user.id }
+                // Turns before the user message, so the history never includes the answer being replaced.
+                val historyCut = list.takeWhile { it.id != user.id }
                 val pending = prepareWithHistory(user.text, action, historyCut) ?: return@launch
-                proceed(pending)
+                proceed(pending.copy(replaces = messageId))
             } finally {
                 preparing = false
             }
         }
-    }
-
-    private suspend fun snapshotFlowMessages(predicate: (List<ChatItem>) -> Boolean) {
-        messages.first(predicate)
     }
 
     private suspend fun prepareWithHistory(text: String, action: Prompts.QuickAction?, historyItems: List<ChatItem>): PendingSend? {

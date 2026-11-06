@@ -25,6 +25,8 @@ object CrashReports {
     private const val DIR = "diagnostics"
     private const val JAVA = "java-crash.txt"
     private const val REPORT = "last-crash.txt"
+    /** When the reported exit happened: the report is written at the next start, so its file time is not. */
+    private const val REPORT_TIME = "last-crash-time.txt"
     private const val SEEN = "seen-exit.txt"
     private const val MAX_TRACE_BYTES = 4 * 1024 * 1024
 
@@ -60,8 +62,11 @@ object CrashReports {
         }
         val app = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}), Android ${Build.VERSION.RELEASE}, ${Build.MANUFACTURER} ${Build.MODEL}"
         val text = CrashText.report(app, exit.timestamp, exit.reason, exit.status, exit.description, details)
+        // Dropped first so an older report's time is never shown with this one.
+        File(dir, REPORT_TIME).delete()
         runCatching { FileStore.writeAtomically(File(dir, REPORT), keepBackup = false) { it.write(text.toByteArray()) } }
             .onFailure { Log.w(TAG, "Could not save the crash report", it) }
+            .onSuccess { runCatching { FileStore.writeAtomically(File(dir, REPORT_TIME), keepBackup = false) { it.write(exit.timestamp.toString().toByteArray()) } } }
     }
 
     /** The last report, or null. Disk read: call off the main thread. */
@@ -69,11 +74,13 @@ object CrashReports {
         val f = File(dir(context), REPORT)
         if (!f.isFile) return null
         val text = runCatching { f.readText() }.getOrNull() ?: return null
-        return Report(f.lastModified(), CrashText.headline(text), text)
+        val exitMs = CrashText.savedExitTime(runCatching { File(dir(context), REPORT_TIME).readText() }.getOrNull()) ?: f.lastModified()
+        return Report(exitMs, CrashText.headline(text), text)
     }
 
     fun clear(context: Context) {
         File(dir(context), REPORT).delete()
+        File(dir(context), REPORT_TIME).delete()
         File(dir(context), JAVA).delete()
     }
 

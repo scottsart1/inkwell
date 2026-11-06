@@ -73,12 +73,21 @@ import kotlin.math.roundToInt
 /**
  * Multi-line text editor over the canvas at the text box's position, styled like the box,
  * with a mini format bar. Tapping outside or Back commits; an emptied box is deleted.
+ * [onDraft] receives every change, so the owner can commit it if the pane goes away first.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun TextEditOverlay(request: TextEditRequest, onDone: (text: String, config: TextConfig) -> Unit) {
+fun TextEditOverlay(
+    request: TextEditRequest,
+    onDraft: (text: String, config: TextConfig) -> Unit = { _, _ -> },
+    onDone: (text: String, config: TextConfig) -> Unit,
+) {
     var value by remember(request) { mutableStateOf(TextFieldValue(request.initialText, TextRange(request.initialText.length))) }
     var config by remember(request) { mutableStateOf(request.config) }
+    fun setConfig(next: TextConfig) {
+        config = next
+        onDraft(value.text, next)
+    }
     var colorsOpen by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -131,7 +140,7 @@ fun TextEditOverlay(request: TextEditRequest, onDone: (text: String, config: Tex
                 Row(Modifier.height(44.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (!request.sticky) {
                         IconAction(Icons.Outlined.Remove, stringResource(R.string.editor_text_smaller), {
-                            config = config.copy(fontSizePt = (config.fontSizePt - 2f).coerceAtLeast(ToolLimits.TEXT_MIN_PT))
+                            setConfig(config.copy(fontSizePt = (config.fontSizePt - 2f).coerceAtLeast(ToolLimits.TEXT_MIN_PT)))
                         })
                         Text(
                             stringResource(R.string.editor_pt_value, config.fontSizePt.roundToInt()),
@@ -140,18 +149,18 @@ fun TextEditOverlay(request: TextEditRequest, onDone: (text: String, config: Tex
                             modifier = Modifier.widthIn(min = 40.dp),
                         )
                         IconAction(Icons.Outlined.Add, stringResource(R.string.editor_text_larger), {
-                            config = config.copy(fontSizePt = (config.fontSizePt + 2f).coerceAtMost(ToolLimits.TEXT_MAX_PT))
+                            setConfig(config.copy(fontSizePt = (config.fontSizePt + 2f).coerceAtMost(ToolLimits.TEXT_MAX_PT)))
                         })
                         PillDivider(vertical = true)
-                        IconAction(Icons.Outlined.FormatBold, stringResource(R.string.editor_bold), { config = config.copy(bold = !config.bold) }, selected = config.bold)
-                        IconAction(Icons.Outlined.FormatItalic, stringResource(R.string.editor_italic), { config = config.copy(italic = !config.italic) }, selected = config.italic)
+                        IconAction(Icons.Outlined.FormatBold, stringResource(R.string.editor_bold), { setConfig(config.copy(bold = !config.bold)) }, selected = config.bold)
+                        IconAction(Icons.Outlined.FormatItalic, stringResource(R.string.editor_italic), { setConfig(config.copy(italic = !config.italic)) }, selected = config.italic)
                         Box {
                             IconAction(Icons.Outlined.Palette, stringResource(R.string.editor_color), { colorsOpen = true })
                             DropdownMenu(expanded = colorsOpen, onDismissRequest = { colorsOpen = false }) {
                                 FlowRow(Modifier.width(240.dp).padding(horizontal = 8.dp)) {
                                     Palettes.pen.forEach { ink ->
                                         Swatch(ink.argb, sameColor(ink.argb, config.color), {
-                                            config = config.copy(color = ink.argb)
+                                            setConfig(config.copy(color = ink.argb))
                                             colorsOpen = false
                                         }, stringResource(ink.name))
                                     }
@@ -175,7 +184,10 @@ fun TextEditOverlay(request: TextEditRequest, onDone: (text: String, config: Tex
             ) {
                 BasicTextField(
                     value = value,
-                    onValueChange = { value = it },
+                    onValueChange = {
+                        value = it
+                        onDraft(it.text, config)
+                    },
                     textStyle = style,
                     cursorBrush = SolidColor(c.accent),
                     modifier = Modifier

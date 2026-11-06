@@ -534,6 +534,7 @@ class LibraryViewModel(private val graph: AppGraph, initialFolderId: String?) : 
         val destination = (target as? DropTarget.IntoFolder)?.folderId
         val docOrigins = plan.documentIds.associateWith { folderOf(it) }
         val folderOrigins = plan.folderIds.associateWith { s.index.parentOf(it)?.id }
+        val folderNames = plan.folderIds.associateWith { s.index[it]?.name }
         val destinationName: UiText = destination?.let { s.index[it]?.name }?.let { UiText.Raw(it) } ?: UiText.Res(R.string.lib_nav_library)
         launchSafely(R.string.lib_err_move) {
             plan.documentIds.forEach { graph.library.moveDocument(it, destination) }
@@ -541,7 +542,13 @@ class LibraryViewModel(private val graph: AppGraph, initialFolderId: String?) : 
             message(UiText.Res(R.string.lib_msg_moved_to, listOf(destinationName)), action = UiText.Res(R.string.lib_undo)) {
                 launchSafely(R.string.lib_err_move) {
                     docOrigins.forEach { (id, origin) -> graph.library.moveDocument(id, origin?.takeIf { it in state.value.index }) }
-                    folderOrigins.forEach { (id, origin) -> graph.library.moveFolder(id, origin?.takeIf { it in state.value.index }) }
+                    folderOrigins.forEach { (id, origin) ->
+                        graph.library.moveFolder(id, origin?.takeIf { it in state.value.index })
+                        // The move may have renamed it ("Math (2)") to avoid a clash at the destination.
+                        val name = folderNames[id]
+                        val folder = graph.library.getFolder(id)
+                        if (name != null && folder != null && folder.name != name) graph.library.updateFolder(folder.copy(name = name))
+                    }
                 }
             }
         }

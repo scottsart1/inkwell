@@ -64,6 +64,36 @@ class ErrorMappingTest {
         assertEquals(AiFailure.Kind.QUOTA, ErrorMapper.http(AiProviderId.ANTHROPIC, 400, """{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}""").kind)
     }
 
+    @Test fun rateLimitMentioningBillingStaysRetryable() {
+        val body = """{"error":{"message":"Rate limit reached for gpt-4o-mini on requests per min (RPM): Limit 3, Used 3. Please try again in 20s. """ +
+            """Visit https://platform.openai.com/account/rate-limits. You can increase your rate limit by adding a payment method to your account at """ +
+            """https://platform.openai.com/account/billing.","type":"requests","code":"rate_limit_exceeded"}}"""
+        val r = ErrorMapper.http(p, 429, body, retryAfterHeader = "20")
+        assertEquals(AiFailure.Kind.RATE_LIMIT, r.kind)
+        assertTrue(r.retryable)
+        assertEquals(20_000L, r.retryAfterMs)
+    }
+
+    @Test fun inactiveBillingIsQuotaNotRateLimit() {
+        val inactive = ErrorMapper.http(p, 429,
+            """{"error":{"message":"Your account is not active, please check your billing details on our website.","type":"billing_not_active","code":"billing_not_active"}}""")
+        assertEquals(AiFailure.Kind.QUOTA, inactive.kind)
+        assertFalse(inactive.retryable)
+        val hardLimit = ErrorMapper.http(p, 429,
+            """{"error":{"message":"Billing hard limit has been reached","type":"invalid_request_error","code":"billing_hard_limit_reached"}}""")
+        assertEquals(AiFailure.Kind.QUOTA, hardLimit.kind)
+        assertFalse(hardLimit.retryable)
+    }
+
+    @Test fun nonPrimitiveErrorMessagesDoNotThrow() {
+        assertNull(ErrorMapper.providerMessage("""{"error":{"message":{"code":1}}}"""))
+        assertNull(ErrorMapper.providerMessage("""{"error":{"message":["a","b"]}}"""))
+        assertNull(ErrorMapper.providerMessage("""{"error":[1,2],"message":{"x":1}}"""))
+        assertEquals("plain", ErrorMapper.providerMessage("""{"error":"plain"}"""))
+        assertEquals("top", ErrorMapper.providerMessage("""{"error":{"message":{"code":1}},"message":"top"}"""))
+        assertEquals(AiFailure.Kind.BAD_REQUEST, ErrorMapper.http(p, 400, """{"error":{"message":{"code":1}}}""").kind)
+    }
+
     @Test fun serverAndNetworkErrorsAreRetryable() {
         for (code in listOf(500, 502, 503, 504, 529)) assertTrue("$code", ErrorMapper.http(p, code, "").retryable)
         assertTrue(ErrorMapper.io(p, UnknownHostException("api.openai.com")).retryable)
@@ -97,5 +127,16 @@ class ErrorMappingTest {
         assertTrue(Endpoints.normalizeCustom("https://x.example.com/v1?key=1").isFailure)
         assertEquals("https://api.openai.com/v1", Endpoints.resolve("https://api.openai.com/v1/", "  "))
         assertEquals("https://api.moonshot.cn/v1", Endpoints.resolve("https://api.moonshot.ai/v1", "https://api.moonshot.cn/v1"))
+    }
+
+    @Test fun aForbiddenCheckClearsOnlyTheStale403Flag() {
+        // A 403 on the key check (possibly a region or proxy block) must not clear a flag a 401 set.
+        val rejected = ErrorMapper.http(p, 401, """{"error":{"message":"Incorrect API key"}}""").message
+        assertFalse(AiServiceImpl.isStaleForbiddenFlag(rejected))
+        // Older builds stored the 403 message as "Invalid": that one is cleared.
+        val forbidden = ErrorMapper.http(p, 403, """{"error":{"message":"unsupported_country_region_territory"}}""").message
+        assertTrue(AiServiceImpl.isStaleForbiddenFlag(forbidden))
+        assertTrue(AiServiceImpl.isStaleForbiddenFlag("Anthropic refused access to this model."))
+        assertFalse(AiServiceImpl.isStaleForbiddenFlag(null))
     }
 }

@@ -13,6 +13,8 @@ import java.nio.file.Files
 class RecordingHooks : LibraryHooks {
     val metaChanged = ArrayList<String>()
     val renamed = ArrayList<String>()
+    /** Documents moved to another folder or below a renamed/moved folder (also in [metaChanged]). */
+    val moved = ArrayList<String>()
     val needIndexing = ArrayList<Pair<String, List<String>>>()
     val coverChanged = ArrayList<String>()
     val deleted = ArrayList<String>()
@@ -23,6 +25,10 @@ class RecordingHooks : LibraryHooks {
 
     override fun documentMetaChanged(docId: String) { metaChanged += docId }
     override fun documentRenamed(docId: String) { renamed += docId }
+    override fun documentMoved(docId: String) {
+        moved += docId
+        metaChanged += docId
+    }
     override fun pagesNeedIndexing(docId: String, pageIds: List<String>) { needIndexing += docId to pageIds }
     override fun coverChanged(docId: String) { coverChanged += docId }
     override fun documentDeleted(docId: String) { deleted += docId }

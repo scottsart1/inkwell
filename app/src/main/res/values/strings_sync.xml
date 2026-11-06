@@ -45,9 +45,9 @@
     <string name="sync_drive_setup_show">One-time Google setup…</string>
     <string name="sync_drive_setup_hide">Hide setup steps</string>
     <string name="sync_drive_setup_intro">Google only lets an app reach Drive once it has been registered. Do this once, on a computer, with the Google account you want to use (about 10 minutes):</string>
-    <string name="sync_drive_setup_step1">Open console.cloud.google.com and create a project, for example "Inkwell".</string>
-    <string name="sync_drive_setup_step2">APIs &amp; Services › Library: search for "Google Drive API" and click Enable.</string>
-    <string name="sync_drive_setup_step3">Google Auth Platform › Branding: app name "Inkwell" and your email. Audience: External, then Publish app (or add your Gmail address as a test user).</string>
+    <string name="sync_drive_setup_step1">Open console.cloud.google.com and create a project, for example “Inkwell”.</string>
+    <string name="sync_drive_setup_step2">APIs &amp; Services › Library: search for “Google Drive API” and click Enable.</string>
+    <string name="sync_drive_setup_step3">Google Auth Platform › Branding: app name “Inkwell” and your email. Audience: External, then Publish app (or add your Gmail address as a test user).</string>
     <string name="sync_drive_setup_step4">Google Auth Platform › Clients › Create client › Android: paste the package name and SHA-1 below.</string>
     <string name="sync_drive_setup_step5">Back here, tap Connect Google Drive and pick your account.</string>
     <string name="sync_drive_setup_package">Package name</string>
@@ -85,6 +85,12 @@
     <string name="sync_backup_auto_on">Every day to %1$s</string>
     <string name="sync_backup_auto_off">Off</string>
     <string name="sync_backup_change">Change folder…</string>
+    <string name="sync_backup_auto_last">Last complete automatic backup: %1$s</string>
+    <string name="sync_backup_auto_failed">The last automatic backup failed. It tries again on the next run.</string>
+    <plurals name="sync_backup_auto_skipped">
+        <item quantity="one">The last automatic backup left %d document out because it couldn\'t be read.</item>
+        <item quantity="other">The last automatic backup left %d documents out because they couldn\'t be read.</item>
+    </plurals>
     <string name="sync_backup_explainer">Sync copies your latest notes to the places you chose. Backups are separate snapshots: deleting a note never deletes its backups.</string>
     <string name="sync_restore_confirm_title">Restore from this backup?</string>
     <string name="sync_restore_confirm_body">The documents in the backup are restored into your library. Large backups can take a few minutes.</string>

@@ -8,7 +8,8 @@ import kotlinx.serialization.json.Json
  * kills the whole process with no Java exception to catch, and WorkManager then runs the job
  * again on every start: without this record one bad recording would crash the app in a loop.
  * The marker is written (fsynced) before the native pass and cleared after it, so a marker
- * found at the next start means that run died inside native code.
+ * left by another process means that run died inside native code. A marker of this process
+ * belongs to a run that is still alive (or leaked one): it is no crash.
  */
 @Serializable
 data class NativeRuns(val entries: Map<String, Entry> = emptyMap()) {
@@ -18,6 +19,8 @@ data class NativeRuns(val entries: Map<String, Entry> = emptyMap()) {
         val inFlight: Boolean = false,
         /** Runs of this recording that died inside native code, in a row. */
         val crashes: Int = 0,
+        /** The process (a token per process start) whose run set [inFlight]. */
+        val owner: String? = null,
     )
 
     companion object {
@@ -44,24 +47,29 @@ object NativeRunRules {
         data class Stop(override val next: NativeRuns) : Decision
     }
 
-    /** A run of [recordingId] is about to enter native code. */
-    fun start(state: NativeRuns, recordingId: String): Decision {
+    /**
+     * A run of [recordingId] in the process [owner] is about to enter native code. Only a mark
+     * left by another process counts as a crash: that process died with the run inside.
+     */
+    fun start(state: NativeRuns, recordingId: String, owner: String): Decision {
         val e = state.entries[recordingId] ?: NativeRuns.Entry()
-        val crashes = if (e.inFlight) e.crashes + 1 else e.crashes
+        val crashes = if (e.inFlight && e.owner != owner) e.crashes + 1 else e.crashes
         return if (crashes >= MAX_CRASHES) {
             Decision.Stop(state.with(recordingId, NativeRuns.Entry(inFlight = false, crashes = crashes)))
         } else {
-            Decision.Proceed(state.with(recordingId, NativeRuns.Entry(inFlight = true, crashes = crashes)))
+            Decision.Proceed(state.with(recordingId, NativeRuns.Entry(inFlight = true, crashes = crashes, owner = owner)))
         }
     }
 
     /**
-     * The run came back from native code: [completed] (every window analysed) forgets the
-     * recording; otherwise (a Java exception, a stop) only the in-flight mark goes.
+     * The run of process [owner] came back from native code: [completed] (every window analysed)
+     * forgets the recording; otherwise (a Java exception, a stop) only the in-flight mark goes.
+     * A mark set by another process is left alone: it records that process's death.
      */
-    fun finish(state: NativeRuns, recordingId: String, completed: Boolean): NativeRuns {
+    fun finish(state: NativeRuns, recordingId: String, owner: String, completed: Boolean): NativeRuns {
         val e = state.entries[recordingId] ?: return state
-        return if (completed) state.without(recordingId) else state.with(recordingId, e.copy(inFlight = false))
+        if (e.inFlight && e.owner != owner) return state
+        return if (completed) state.without(recordingId) else state.with(recordingId, e.copy(inFlight = false, owner = null))
     }
 
     /** The user asked to try again (or the recording is gone): start from a clean slate. */

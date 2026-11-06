@@ -19,6 +19,7 @@
     <string name="pdf_error_invalid_split">A document can only be split between two pages.</string>
     <string name="pdf_error_nothing_scanned">The scan did not contain any pages.</string>
     <string name="pdf_error_too_large">This file is too large to open on this device.</string>
+    <string name="pdf_error_page_unreadable">A page could not be read, so nothing was changed.</string>
     <string name="pdf_scanner_unavailable">The document scanner is not available. It needs up-to-date Google Play services and, the first time, an internet connection to download.</string>
     <string name="pdf_scanner_failed">The document scanner could not be started.</string>
 </resources>

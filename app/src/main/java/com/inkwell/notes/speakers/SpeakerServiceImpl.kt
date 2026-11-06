@@ -193,9 +193,14 @@ class SpeakerServiceImpl(private val graph: AppGraph) : SpeakerService {
 
     override suspend fun renamePerson(personId: String, name: String) {
         val clean = requireNotNull(SpeakerNames.clean(name)) { "A name is needed" }
-        val p = dao.person(personId) ?: return
-        if (p.name == clean) return
-        dao.upsertPerson(p.copy(name = clean, updatedAt = System.currentTimeMillis()))
+        peopleLock.withLock {
+            val p = dao.person(personId) ?: return
+            if (p.name == clean) return
+            // Names are how typed names find people (personFor): two people must not share one.
+            val other = dao.personNamed(clean)
+            require(other == null || other.id == personId) { "Someone is already called that" }
+            dao.upsertPerson(p.copy(name = clean, updatedAt = System.currentTimeMillis()))
+        }
         rewriteNames(dao.speakersOf(personId).map { it.recordingId }.toSet())
     }
 

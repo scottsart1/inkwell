@@ -3,6 +3,7 @@ package com.inkwell.notes.pdf
 import android.content.Context
 import androidx.annotation.StringRes
 import com.inkwell.notes.R
+import com.inkwell.notes.core.storage.UnreadablePageException
 
 /** Why a PDF operation failed; each maps to a message the user can act on. */
 enum class PdfError(@StringRes val messageRes: Int) {
@@ -24,6 +25,8 @@ enum class PdfError(@StringRes val messageRes: Int) {
     INVALID_SPLIT(R.string.pdf_error_invalid_split),
     NOTHING_SCANNED(R.string.pdf_error_nothing_scanned),
     TOO_LARGE(R.string.pdf_error_too_large),
+    /** The stored content of a page to copy could not be read. */
+    PAGE_UNREADABLE(R.string.pdf_error_page_unreadable),
 }
 
 /**
@@ -53,10 +56,15 @@ internal object PdfErrors {
     }
 
     /** Maps an unexpected failure while writing files to the most helpful error. */
-    fun forWrite(context: Context, t: Throwable): PdfException = when {
-        t is PdfException -> t
-        isOutOfSpace(t) -> create(context, PdfError.NO_SPACE, t)
-        t is OutOfMemoryError -> create(context, PdfError.TOO_LARGE, t)
-        else -> create(context, PdfError.SAVE_FAILED, t)
+    fun forWrite(context: Context, t: Throwable): PdfException =
+        if (t is PdfException) t else create(context, writeError(t), t)
+
+    /** The error [forWrite] reports for [t]. */
+    fun writeError(t: Throwable): PdfError = when {
+        t is PdfException -> t.error
+        isOutOfSpace(t) -> PdfError.NO_SPACE
+        t is OutOfMemoryError -> PdfError.TOO_LARGE
+        t is UnreadablePageException -> PdfError.PAGE_UNREADABLE
+        else -> PdfError.SAVE_FAILED
     }
 }

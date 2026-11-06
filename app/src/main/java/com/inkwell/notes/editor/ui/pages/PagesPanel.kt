@@ -240,7 +240,8 @@ private fun pageMenu(controller: NotebookController, page: PageMeta, index: Int,
             controller.addPage(PageRanges.insertionIndex(index, after = true, count = controller.pages.size))
         },
         MenuItemSpec(stringResource(R.string.editor_duplicate_page), Icons.Outlined.CopyAll, 1) {
-            controller.launchOp(R.string.editor_duplicate_failed) { lib.duplicatePage(page.id) }
+            // The copy is made from disk: write the page's latest ink first.
+            controller.launchOp(R.string.editor_duplicate_failed) { controller.saveNow(); lib.duplicatePage(page.id) }
         },
         MenuItemSpec(stringResource(R.string.editor_rotate_page), Icons.AutoMirrored.Outlined.RotateRight, 1) {
             controller.launchOp(R.string.editor_rotate_failed) { lib.rotatePage(page.id, 90) }
@@ -277,7 +278,7 @@ private fun SelectionActions(controller: NotebookController, selected: Set<Strin
             callbacks.onDelete(ids)
         }, enabled = enabled && PageRanges.canDelete(ids.size, pages.size))
         IconAction(Icons.Outlined.CopyAll, stringResource(R.string.editor_duplicate_pages), {
-            controller.launchOp(R.string.editor_duplicate_failed) { ids.forEach { lib.duplicatePage(it) } }
+            controller.launchOp(R.string.editor_duplicate_failed) { controller.saveNow(); ids.forEach { lib.duplicatePage(it) } }
             onFinished()
         }, enabled = enabled)
         IconAction(Icons.AutoMirrored.Outlined.RotateRight, stringResource(R.string.editor_rotate_pages), {

@@ -15,6 +15,7 @@ import com.inkwell.notes.core.storage.db.ChatMessageEntity
 import com.inkwell.notes.core.storage.db.EmbeddingEntity
 import com.inkwell.notes.core.storage.db.TextIndexEntity
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -189,6 +190,7 @@ class LibraryRepositoryDocumentsTest {
         assertEquals(f.id, after.folderId)
         assertEquals(3, after.lastPageIndex)
         assertEquals(h.now, after.openedAt)
+        assertEquals("a move tells sync to move the copies", listOf(d.id), h.hooks.moved)
     }
 
     @Test fun viewStateRejectsNonFiniteValues() = runTest {
@@ -219,6 +221,7 @@ class LibraryRepositoryDocumentsTest {
         assertNull(repo.getDocument(d.id)!!.folderId)
         repo.moveDocument(d.id, "nope")
         assertNull(repo.getDocument(d.id)!!.folderId)
+        assertTrue(h.hooks.moved.isEmpty())
     }
 
     // ------------------------------------------------------------------ duplicate
@@ -411,9 +414,81 @@ class LibraryRepositoryDocumentsTest {
         assertNull(repo.getFolder(oldFolder.id))
         assertNotNull("trashed a moment ago", repo.getDocument(recent.id))
         assertFalse(orphanDir.exists())
-        // A journaled id whose row still exists is alive: its files must survive.
+        // A journaled id whose row still exists is alive (or being deleted right now): its files
+        // survive and its entry is left to the deletion that wrote it.
         assertTrue(h.files.docDir(recent.id).exists())
+        assertEquals(listOf(recent.id), File(h.files.root.parentFile, "pending-deletes.txt").readLines().filter { it.isNotBlank() })
+    }
+
+    @Test fun purgeKeepsTheJournalEntryOfADeletionThatHasNotCommittedYet() = runTest {
+        // deletePermanently journals first and commits after; a purge running in between sees the row.
+        val doc = repo.createDocument(DocKind.NOTEBOOK)
+        File(h.files.root.parentFile, "pending-deletes.txt").writeText("${doc.id}\n")
+        repo.purgeExpiredTrash()
+        // The deletion now commits, and the process dies before the folder is removed.
+        h.db.documents().delete(doc.id)
+        val dir = h.files.docDir(doc.id).apply { File(this, "x.bin").writeBytes(byteArrayOf(1)) }
+        // The next purge still finds the entry and removes the folder.
+        repo.purgeExpiredTrash()
+        assertFalse(dir.exists())
         assertFalse(File(h.files.root.parentFile, "pending-deletes.txt").exists())
+    }
+
+    /**
+     * A repository on [h]'s database whose first permanent deletion restores the document [restore]
+     * names, like a user tapping Restore while Empty trash or the purge works through its list.
+     */
+    private fun repoRestoringDuringDelete(restore: () -> String): LibraryRepositoryImpl {
+        lateinit var r: LibraryRepositoryImpl
+        var restored = false
+        val hooks = object : LibraryHooks {
+            override fun documentMetaChanged(docId: String) {}
+            override fun documentRenamed(docId: String) {}
+            override fun pagesNeedIndexing(docId: String, pageIds: List<String>) {}
+            override fun coverChanged(docId: String) {}
+            override fun documentDeleted(docId: String) {
+                if (restored) return
+                restored = true
+                runBlocking { r.restoreDocument(restore()) }
+            }
+            override suspend fun renderPdfPagePng(docId: String, pdfPageIndex: Int, widthPx: Int, heightPx: Int): ByteArray? = null
+        }
+        r = LibraryRepositoryImpl(h.db, h.files, h.pageStore, h.settings, hooks) { h.now }
+        return r
+    }
+
+    @Test fun purgeSkipsADocumentRestoredAfterItWasListed() = runTest {
+        var second = ""
+        val r = repoRestoringDuringDelete { second }
+        // The fake keeps insertion order, so the first document is deleted first.
+        val first = r.createDocument(DocKind.NOTEBOOK).id
+        second = r.createDocument(DocKind.NOTEBOOK).id
+        r.trashDocument(first)
+        r.trashDocument(second)
+        h.advance(LibraryRepositoryImpl.TRASH_RETENTION_MS + 1000)
+        h.files.docDir(second)
+        assertEquals(1, r.purgeExpiredTrash())
+        assertNull(r.getDocument(first))
+        val restored = r.getDocument(second)
+        assertNotNull("a document restored during the purge was deleted", restored)
+        assertNull(restored!!.trashedAt)
+        assertTrue(File(h.files.root, second).exists())
+    }
+
+    @Test fun emptyTrashSkipsADocumentRestoredAfterItWasListed() = runTest {
+        var second = ""
+        val r = repoRestoringDuringDelete { second }
+        val first = r.createDocument(DocKind.NOTEBOOK).id
+        second = r.createDocument(DocKind.NOTEBOOK).id
+        r.trashDocument(first)
+        r.trashDocument(second)
+        h.files.docDir(second)
+        r.emptyTrash()
+        assertNull(r.getDocument(first))
+        val restored = r.getDocument(second)
+        assertNotNull("a document restored during Empty trash was deleted", restored)
+        assertNull(restored!!.trashedAt)
+        assertTrue(File(h.files.root, second).exists())
     }
 
     // ------------------------------------------------------------------ queries

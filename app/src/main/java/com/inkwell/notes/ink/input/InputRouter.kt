@@ -13,6 +13,7 @@ import android.view.ViewConfiguration
 import androidx.input.motionprediction.MotionEventPredictor
 import com.inkwell.notes.core.model.InputPrefs
 import com.inkwell.notes.core.model.LongPressAction
+import com.inkwell.notes.core.model.SideButtonMode
 import com.inkwell.notes.core.model.TapGestureAction
 import com.inkwell.notes.core.model.ToolState
 import com.inkwell.notes.core.model.ToolType
@@ -319,11 +320,26 @@ internal class InputRouter(private val e: InkEngine) {
 
     private fun switchStylusTool(newType: ToolType) {
         val cur = stylusTool
+        handler.removeCallbacks(longPress)
+        if (keepsSelectionManipulation(cur === e.selectionTool, newType)) {
+            // The selection tool works the same under any tool but the eraser: keep the running
+            // move/resize/rotate (or pending tap) instead of committing and hit-testing again,
+            // which would ink from a rotate handle that moved, or count one press as a double tap.
+            stylusToolType = newType
+            return
+        }
         if (cur != null) {
             fillSingle(ev, stylusPage, lastSX, lastSY, lastSPressure, lastSTilt, lastSTime, stylus = true)
             cur.onUp(e, ev)
         }
-        handler.removeCallbacks(longPress)
+        if (endsContactOnLassoRelease(stylusToolType, buttons.mode, buttons.temporaryTool)) {
+            // Hold-to-lasso button released before lifting: the loop is done. Continuing with the
+            // base tool would clear the new selection and draw a stray stroke to the lift point.
+            stylusTool = null
+            stylusToolType = null
+            stylusConsumed = true
+            return
+        }
         startStylusTool(newType)
     }
 
@@ -364,6 +380,8 @@ internal class InputRouter(private val e: InkEngine) {
     }
 
     private val longPress = Runnable {
+        // "Nothing" leaves the gesture alone: checked before cancelling or consuming anything.
+        if (e.inputPrefs.longPress == LongPressAction.NONE) return@Runnable
         val x: Float; val y: Float
         if (stylusId != -1) {
             val type = stylusToolType ?: return@Runnable
@@ -379,7 +397,6 @@ internal class InputRouter(private val e: InkEngine) {
             mode = Mode.CONSUMED
             x = f.x; y = f.y
         } else return@Runnable
-        if (e.inputPrefs.longPress == LongPressAction.NONE) return@Runnable
         val page = e.pageIndexAt(x, y)
         if (page < 0) return@Runnable
         e.viewToPage(page, x, y, tmp)
@@ -895,6 +912,28 @@ internal class InputRouter(private val e: InkEngine) {
          * restore what it just erased and pop a menu whenever the pen rests on a speck.
          */
         fun allowsStylusLongPress(type: ToolType, isInking: Boolean): Boolean = !isInking && type != ToolType.ERASER
+
+        /**
+         * Whether a side-button change mid-contact leaves a running selection manipulation
+         * ([manipulatingSelection]) untouched, only relabelling the contact with [newType]. True for
+         * every tool but the eraser, which never acts on the selection: the move, resize or rotate
+         * keeps following the pen and a press without movement stays a single tap.
+         */
+        fun keepsSelectionManipulation(manipulatingSelection: Boolean, newType: ToolType): Boolean =
+            manipulatingSelection && newType != ToolType.ERASER
+
+        /**
+         * Whether a side-button change mid-contact ends the contact instead of continuing with the
+         * new tool: true when the hold-to-lasso button was released while drawing a lasso loop (or
+         * while manipulating the selection with the eraser as the base tool, see
+         * [keepsSelectionManipulation]).
+         */
+        fun endsContactOnLassoRelease(
+            contactType: ToolType?,
+            mode: SideButtonMode,
+            temporaryTool: ToolType?,
+        ): Boolean = contactType == ToolType.LASSO &&
+            mode == SideButtonMode.HOLD_TO_LASSO && temporaryTool == null
         /** MotionEvent.FLAG_CANCELED (API 33): the pointer was cancelled, e.g. a palm. */
         private const val FLAG_CANCELED = 0x20
         private const val EXCLUSION_HEIGHT_DP = 200f

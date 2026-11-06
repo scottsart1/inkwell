@@ -150,10 +150,21 @@ class TranscriptionEmbeddingsTest {
         val check = h.engine.checkKey(AiProviderId.ANTHROPIC, "sk-ant-bad-123456", null)
         assertFalse(check.ok)
         assertTrue(check.rejected)
+        assertFalse(check.authenticated)
         assertTrue(check.message.contains("Anthropic rejected the API key"))
         val anth = h.take()
         assertEquals("sk-ant-bad-123456", anth.getHeader("x-api-key"))
         assertEquals("2023-06-01", anth.getHeader("anthropic-version"))
         assertEquals("auth failures are not retried", 2, h.server.requestCount)
+    }
+
+    @Test fun forbiddenModelListDoesNotRejectKey() = runBlocking {
+        // OpenAI restricted keys without the model.read scope get 403 on /models but still chat.
+        h.enqueueJson("""{"error":{"message":"Missing scopes: api.model.read","type":"invalid_request_error"}}""", code = 403)
+        val check = h.engine.checkKey(AiProviderId.OPENAI, "sk-restricted-123456789", null)
+        assertFalse(check.ok)
+        assertFalse(check.rejected)
+        assertTrue(check.authenticated)
+        assertTrue(check.message.contains("403"))
     }
 }

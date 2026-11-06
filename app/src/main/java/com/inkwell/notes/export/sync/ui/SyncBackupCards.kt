@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import com.inkwell.notes.R
 import com.inkwell.notes.core.model.DestinationPrefs
 import com.inkwell.notes.export.SyncStatus
+import com.inkwell.notes.export.backup.AutoBackupStatus
 import com.inkwell.notes.export.sync.hasAnyTarget
 import com.inkwell.notes.ui.theme.Inkwell
 import kotlinx.coroutines.delay
@@ -126,6 +127,7 @@ internal fun BackupCard(
     onAutoBackup: (Boolean) -> Unit,
     onChangeAutoFolder: () -> Unit,
     onDismissResult: () -> Unit,
+    autoStatus: AutoBackupStatus = AutoBackupStatus(),
 ) {
     val c = Inkwell.colors
     val running = state is BackupState.Running
@@ -161,8 +163,34 @@ internal fun BackupCard(
             subtitle = autoBackup?.let { stringResource(R.string.sync_backup_auto_on, it.label.ifBlank { "the chosen folder" }) }
                 ?: stringResource(R.string.sync_backup_auto_off),
         )
-        if (autoBackup != null) QuietAction(stringResource(R.string.sync_backup_change), onChangeAutoFolder)
+        if (autoBackup != null) {
+            AutoBackupStatusText(autoStatus)
+            QuietAction(stringResource(R.string.sync_backup_change), onChangeAutoFolder)
+        }
         Text(stringResource(R.string.sync_backup_explainer), style = MaterialTheme.typography.bodySmall, color = c.inkMuted)
+    }
+}
+
+/** Last complete automatic backup, and whether the last run left documents out or failed. */
+@Composable
+private fun AutoBackupStatusText(status: AutoBackupStatus) {
+    val c = Inkwell.colors
+    val problem = when (status.problem) {
+        AutoBackupStatus.Problem.NONE -> null
+        AutoBackupStatus.Problem.SKIPPED -> pluralStringResource(R.plurals.sync_backup_auto_skipped, status.lastSkipped, status.lastSkipped)
+        AutoBackupStatus.Problem.FAILED -> stringResource(R.string.sync_backup_auto_failed)
+    }
+    if (status.lastSuccessAt <= 0 && problem == null) return
+    Column(
+        Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        if (status.lastSuccessAt > 0) {
+            val now = System.currentTimeMillis()
+            val last = DateUtils.getRelativeTimeSpanString(status.lastSuccessAt, now.coerceAtLeast(status.lastSuccessAt), DateUtils.MINUTE_IN_MILLIS).toString()
+            Text(stringResource(R.string.sync_backup_auto_last, last), style = MaterialTheme.typography.bodySmall, color = c.inkMuted)
+        }
+        if (problem != null) Text(problem, style = MaterialTheme.typography.bodySmall, color = c.danger)
     }
 }
 

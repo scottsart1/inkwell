@@ -92,6 +92,12 @@ interface DocumentDao {
 
     @Query("UPDATE documents SET thumbnailPath = :path WHERE id = :id")
     suspend fun setThumbnail(id: String, path: String?)
+
+    // ---- Added by export/sync
+
+    /** Records a copy to the sync destinations; touches nothing else and never re-creates a deleted row. */
+    @Query("UPDATE documents SET lastSyncedAt = :at WHERE id = :id")
+    suspend fun setLastSyncedAt(id: String, at: Long)
 }
 
 @Dao

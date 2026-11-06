@@ -13,7 +13,9 @@ import com.inkwell.notes.ocr.index.Retriever
 import com.inkwell.notes.ocr.index.SearchEngine
 import com.inkwell.notes.ocr.index.SearchOutcome
 import com.inkwell.notes.ocr.index.SemanticIndex
+import com.inkwell.notes.ocr.work.ImageOcrCache
 import com.inkwell.notes.search.TranscriptSearchText
+import java.io.File
 
 /**
  * The local full-text index (Room FTS4 over `text_index`) of titles, tags, typed text,
@@ -26,9 +28,13 @@ class SearchIndexImpl(private val graph: AppGraph) : SearchIndex {
     private val loader by lazy { DocumentTextLoader(graph.db) }
     private val engine by lazy { SearchEngine(graph, semanticIndex) }
     private val retriever by lazy { Retriever(graph, loader, semanticIndex) }
+    private val imageCache by lazy { ImageOcrCache(File(graph.context.noBackupFilesDir, ImageOcrCache.DIR)) }
 
     override suspend fun search(query: String, limit: Int, semantic: Boolean): List<SearchHit> =
         engine.search(query, limit, semantic).hits
+
+    override suspend fun searchInDocument(docId: String, query: String, limit: Int): List<SearchHit> =
+        engine.search(query, limit, wantSemantic = false, documentId = docId).hits
 
     /** [search] plus whether semantic matching was used or failed (for the search screen). */
     internal suspend fun searchDetailed(query: String, limit: Int, semantic: Boolean): SearchOutcome =
@@ -46,7 +52,11 @@ class SearchIndexImpl(private val graph: AppGraph) : SearchIndex {
     override suspend fun replaceTranscript(docId: String, recordingId: String, segments: List<TranscriptSegment>, engine: String) =
         writer.replaceTranscript(docId, recordingId, TranscriptSearchText.forIndex(segments), engine)
 
-    override suspend fun removeDocument(docId: String) = writer.removeDocument(docId)
+    /** Also forgets the document's recognised image text, which lives outside its folder. */
+    override suspend fun removeDocument(docId: String) {
+        writer.removeDocument(docId)
+        imageCache.removeDocument(docId)
+    }
 
     override suspend fun documentText(docId: String): List<IndexedPassage> = loader.load(docId).map { it.passage }
 
