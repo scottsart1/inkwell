@@ -184,7 +184,8 @@ class ExportServiceImpl(private val graph: AppGraph) : ExportService {
         val context = graph.context
         val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
         return Intent(Intent.ACTION_SEND).apply {
-            type = mime
+            // Recordings that cannot be joined arrive as a zip of segments, whatever the caller expected.
+            type = if (file.extension.equals("zip", ignoreCase = true)) "application/zip" else mime
             putExtra(Intent.EXTRA_STREAM, uri)
             putExtra(Intent.EXTRA_TITLE, file.name)
             putExtra(Intent.EXTRA_SUBJECT, file.nameWithoutExtension)

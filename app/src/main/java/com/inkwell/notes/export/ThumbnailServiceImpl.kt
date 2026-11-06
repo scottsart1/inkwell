@@ -114,6 +114,9 @@ class ThumbnailServiceImpl(private val graph: AppGraph) : ThumbnailService {
                     try {
                         writeWebp(bmp, tmp)
                         if (!tmp.renameTo(file)) { tmp.copyTo(file, overwrite = true); tmp.delete() }
+                        // Stamp the cache with the page version read before its content: an edit
+                        // saved while this rendered (newer modifiedAt) must still make it stale.
+                        if (page.modifiedAt in 1..System.currentTimeMillis()) file.setLastModified(page.modifiedAt)
                     } catch (e: Exception) {
                         tmp.delete()
                         Log.w(TAG, "Page thumbnail not cached (${e.javaClass.simpleName})")

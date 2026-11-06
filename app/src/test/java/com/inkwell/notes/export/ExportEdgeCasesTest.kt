@@ -83,4 +83,30 @@ class ExportEdgeCasesTest {
         assertTrue(md, md.contains("\\#tag ok") || md.contains("#tag ok"))
         assertTrue(md, md.contains("1\\) one"))
     }
+
+    @Test fun separatorLinesNeverTurnTextIntoHeadingsOrRules() {
+        // "---" / "===" under a line is a setext heading underline; "---" alone a thematic break.
+        val md = MarkdownWriter.inline(listOf(InlineRun("Agenda\n---\nTotals\n===\n-- --\n- - -\n-5 degrees\n=x")))
+        assertEquals("Agenda\n\\---\nTotals\n\\===\n\\-- --\n\\- - -\n-5 degrees\n=x", md)
+        val doc = DocumentTextBuilder.build(
+            "T", null,
+            listOf(PageTextInput(0, texts = listOf(TextItem("t", 0f, 0f, 100f, 20f, "Shopping\n---\nmilk")))),
+            emptyList(),
+        )
+        val out = MarkdownWriter.write(doc)
+        assertFalse(out, out.lines().any { it.trim() == "---" || it.trim() == "===" })
+        assertTrue(out, out.contains("Shopping\\\n\\---\\\nmilk"))
+    }
+
+    @Test fun trailingHashesInHeadingsAreKept() {
+        val doc = ExportDocument(
+            "Issue #",
+            listOf(ExportSection("Week #", listOf(ExportBlock.Heading(1, runsOf("Ticket ##")), ExportBlock.Heading(2, runsOf("C#"))))),
+        )
+        val md = MarkdownWriter.write(doc)
+        assertTrue(md, md.startsWith("# Issue \\#\n"))
+        assertTrue(md, md.contains("\n## Week \\#\n"))
+        assertTrue(md, md.contains("\n## Ticket \\##\n"))
+        assertTrue(md, md.contains("\n### C#\n"))
+    }
 }

@@ -12,6 +12,13 @@ object ExportNaming {
     /** Longest base name we produce, in UTF-16 units (most file systems allow 255 bytes). */
     const val MAX_BASE_LENGTH = 120
 
+    /**
+     * Longest base name in UTF-8 bytes. App storage (ext4/f2fs) and most documents providers
+     * refuse names over 255 bytes, which 120 CJK characters (3 bytes each) already exceed;
+     * this leaves room for a " (12)" suffix and the extension.
+     */
+    const val MAX_BASE_BYTES = 200
+
     private val FORBIDDEN = Regex("""[\\/:*?"<>|\u0000-\u001F\u007F]""")
     private val SPACES = Regex("""\s+""")
     private val RESERVED_WINDOWS = setOf(
@@ -23,8 +30,9 @@ object ExportNaming {
     /**
      * A file-system-safe base name (no extension) for [title]: forbidden characters become
      * spaces, whitespace collapses, leading/trailing dots and spaces go, reserved device names
-     * get a suffix, and the result is capped at [MAX_BASE_LENGTH] without splitting a
-     * surrogate pair. Never empty: falls back to [fallback].
+     * get a suffix, and the result is capped at [MAX_BASE_LENGTH] characters and
+     * [MAX_BASE_BYTES] bytes without splitting a surrogate pair. Never empty: falls back to
+     * [fallback].
      */
     fun sanitize(title: String, fallback: String = "Inkwell"): String {
         val normalized = Normalizer.normalize(title, Normalizer.Form.NFC)
@@ -32,7 +40,27 @@ object ExportNaming {
         if (s.isEmpty()) s = fallback
         if (s.substringBefore('.').uppercase() in RESERVED_WINDOWS) s = "${s}_"
         if (s.length > MAX_BASE_LENGTH) s = truncate(s, MAX_BASE_LENGTH)
+        s = truncateBytes(s, MAX_BASE_BYTES)
         return s.ifEmpty { fallback }
+    }
+
+    /** [s] cut to at most [maxBytes] bytes of UTF-8 at a code point boundary, not ending in a dot or space. */
+    fun truncateBytes(s: String, maxBytes: Int): String {
+        var bytes = 0
+        var i = 0
+        while (i < s.length) {
+            val cp = s.codePointAt(i)
+            val n = when {
+                cp < 0x80 -> 1
+                cp < 0x800 -> 2
+                cp < 0x10000 -> 3
+                else -> 4
+            }
+            if (bytes + n > maxBytes) return s.substring(0, i).trimEnd('.', ' ')
+            bytes += n
+            i += Character.charCount(cp)
+        }
+        return s
     }
 
     /** [s] cut to at most [maxLength] UTF-16 units without splitting a surrogate pair or ending in a dot or space. */

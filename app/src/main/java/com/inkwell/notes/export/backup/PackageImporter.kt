@@ -41,7 +41,9 @@ internal class PackageImporter(private val graph: AppGraph) {
             // a restore stops there instead of quietly skipping every larger document.
             val overBudget = if (budget < MAX_PACKAGE_BYTES) PackageException.Reason.NO_SPACE else PackageException.Reason.TOO_LARGE
             val names = try {
-                ZipSafety.extract(ZipInputStream(input), staging, budget, overBytes = overBudget)
+                // A library backup picked as a package would otherwise be unpacked whole (gigabytes,
+                // down to the last 64 MB of free space) before being rejected.
+                ZipSafety.extract(ZipInputStream(input), staging, budget, overBytes = overBudget, refuse = setOf(LibraryManifest.FILE))
             } catch (e: PackageException) {
                 throw e
             } catch (e: java.util.zip.ZipException) {

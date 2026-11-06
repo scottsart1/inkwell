@@ -8,11 +8,11 @@ object MarkdownWriter {
 
     fun write(doc: ExportDocument): String {
         val out = StringBuilder()
-        out.append("# ").append(escapeInline(doc.title.ifBlank { "Untitled" }).replace('\n', ' ')).append("\n")
+        out.append("# ").append(headingText(escapeInline(doc.title.ifBlank { "Untitled" }).replace('\n', ' '))).append("\n")
         for (section in doc.sections) {
             if (section.heading == null && section.blocks.isEmpty()) continue
             if (section.heading != null) {
-                out.append("\n## ").append(escapeInline(section.heading).replace('\n', ' ')).append("\n")
+                out.append("\n## ").append(headingText(escapeInline(section.heading).replace('\n', ' '))).append("\n")
             }
             writeBlocks(out, section.blocks)
         }
@@ -28,7 +28,7 @@ object MarkdownWriter {
             when (block) {
                 is ExportBlock.Heading -> {
                     val hashes = "#".repeat((block.level + 1).coerceIn(2, 6))
-                    out.append(hashes).append(' ').append(inline(block.runs).replace('\n', ' ')).append("\n")
+                    out.append(hashes).append(' ').append(headingText(inline(block.runs).replace('\n', ' '))).append("\n")
                 }
                 is ExportBlock.Paragraph -> out.append(hardBreaks(inline(block.runs))).append("\n")
                 is ExportBlock.ListItem -> {
@@ -153,13 +153,19 @@ object MarkdownWriter {
         return sb.toString()
     }
 
-    private val BLOCK_START = Regex("""(?m)^(\s{0,3})([#+\-=]|\d{1,9}[.)])(?=\s|$)""")
+    // A line of only '-' / '=' ("---", "===", "-- --") is a setext heading underline or a
+    // thematic break, so its first character is escaped too.
+    private val BLOCK_START = Regex("""(?m)^(\s{0,3})([#+\-=]|\d{1,9}[.)])(?=\s|$|[-= \t]*$)""")
     private val LEADING_WHITESPACE = Regex("""(?m)^[ \t]+""")
+    private val ATX_CLOSING = Regex("""(^|\s)(#+)\s*$""")
+
+    /** Heading text whose trailing " #" would otherwise be dropped as the heading's closing sequence. */
+    private fun headingText(s: String): String = ATX_CLOSING.replace(s) { m -> m.groupValues[1] + "\\" + m.groupValues[2] }
 
     /**
-     * Escapes text that would otherwise start a heading, list or rule at a line start, and keeps
-     * indentation of four or more columns (a tab counts as four) from starting an indented code
-     * block by writing it as non-breaking spaces.
+     * Escapes text that would otherwise start a heading, list or rule at a line start (or turn
+     * the line above into a heading), and keeps indentation of four or more columns (a tab
+     * counts as four) from starting an indented code block by writing it as non-breaking spaces.
      */
     private fun escapeLineStarts(s: String): String {
         val indented = LEADING_WHITESPACE.replace(s) { m ->
