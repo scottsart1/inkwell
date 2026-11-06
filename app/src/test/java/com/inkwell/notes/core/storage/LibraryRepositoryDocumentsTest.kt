@@ -394,6 +394,31 @@ class LibraryRepositoryDocumentsTest {
         assertTrue(File(h.files.root, keep.id).exists() || !File(h.files.root, keep.id).exists()) // keep's folder may not exist yet
     }
 
+    @Test fun emptyingTheTrashLeavesWhatIsRestoredOrTrashedWhileItRuns() = runTest {
+        val first = repo.createDocument(DocKind.NOTEBOOK)
+        val second = repo.createDocument(DocKind.NOTEBOOK)
+        h.pageStore.save(second.id, repo.getPages(second.id).single().id, PageContent(strokes = listOf(ink("s"))))
+        val later = repo.createFolder("Later", null)
+        repo.trashDocument(first.id)
+        repo.trashDocument(second.id)
+        // Emptying runs on after the user leaves the trash: while the first deletion is under way
+        // the user restores the second document and trashes a folder.
+        h.hooks.onDocumentDeleted = { id ->
+            if (id == first.id) {
+                h.db.documentTable.replace(second.id) { it.copy(trashedAt = null) }
+                h.db.folderTable.replace(later.id) { it.copy(trashedAt = h.now) }
+            }
+        }
+        repo.emptyTrash()
+        assertNull(repo.getDocument(first.id))
+        assertNotNull("restored before its turn: kept", repo.getDocument(second.id))
+        assertNull(repo.getDocument(second.id)!!.trashedAt)
+        assertEquals(1, h.pageStore.load(second.id, repo.getPages(second.id).single().id).strokes.size)
+        assertEquals(listOf(first.id), h.hooks.deleted)
+        assertNotNull("trashed after emptying started: still in the trash", repo.getFolder(later.id)?.trashedAt)
+        assertFalse(File(h.files.root.parentFile, "pending-deletes.txt").exists())
+    }
+
     @Test fun purgeOnlyRemovesTrashOlderThanThirtyDaysAndFinishesInterruptedDeletes() = runTest {
         val old = repo.createDocument(DocKind.NOTEBOOK)
         val recent = repo.createDocument(DocKind.NOTEBOOK)

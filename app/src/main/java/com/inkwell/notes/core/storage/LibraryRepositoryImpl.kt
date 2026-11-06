@@ -510,8 +510,11 @@ class LibraryRepositoryImpl internal constructor(
     }
 
     override suspend fun emptyTrash() {
+        // Only what was in the trash when emptying started: a folder trashed meanwhile (with its
+        // documents, which are not in this list) keeps its row.
+        val startedAt = clock()
         for (doc in db.documents().trashed()) deleteQuietly(doc.id, trashedBefore = Long.MAX_VALUE)
-        deleteTrashedFolders(before = null)
+        deleteTrashedFolders(before = startedAt + 1)
     }
 
     /**

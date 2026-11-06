@@ -117,6 +117,10 @@ class TrashViewModel(private val graph: AppGraph) : ViewModel() {
         }
     }
 
+    /**
+     * Restores and deletions run in the app scope: leaving the trash right after tapping must not
+     * cancel them halfway (a folder group half deleted, the rest of an emptied trash still there).
+     */
     private fun run(entry: TrashEntry, @StringRes error: Int, block: suspend () -> Unit) {
         if (entry.key in busy) return
         busy = busy + entry.key
