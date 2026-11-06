@@ -84,10 +84,13 @@ class PlayServicesDriveAuth(
 
         /** The answer of the consent screen launched for [Begin.NeedsConsent]. */
         fun finish(context: Context, data: Intent?): String {
+            if (data == null) throw DriveException.Cancelled()
             val result = try {
                 Identity.getAuthorizationClient(context).getAuthorizationResultFromIntent(data)
             } catch (e: ApiException) {
                 throw map(e)
+            } catch (e: Exception) {
+                throw DriveException.SignInFailed(null)
             }
             return result.accessToken?.takeIf { it.isNotBlank() } ?: throw DriveException.NeedsSignIn()
         }

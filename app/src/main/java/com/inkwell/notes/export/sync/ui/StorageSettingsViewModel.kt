@@ -1,6 +1,5 @@
 package com.inkwell.notes.export.sync.ui
 
-import android.app.Activity
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -206,7 +205,7 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
     /** Google's account/consent screen closed with [resultCode] and [data]. */
     fun onDriveConsent(resultCode: Int, data: Intent?) {
         driveConsent = null
-        if (resultCode != Activity.RESULT_OK && data == null) {
+        if (data == null) {
             driveFor = null
             driveCheck = CheckState.Failed(context.getString(R.string.sync_drive_cancelled))
             return
