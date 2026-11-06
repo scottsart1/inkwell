@@ -18,6 +18,7 @@ import com.inkwell.notes.ocr.text.ReadingOrder
 import com.inkwell.notes.ocr.work.CatchUpWorker
 import com.inkwell.notes.ocr.work.IndexDocumentWorker
 import com.inkwell.notes.ocr.work.IndexPageWorker
+import com.inkwell.notes.ocr.work.ImageOcrCache
 import com.inkwell.notes.ocr.work.IndexingWorker
 import com.inkwell.notes.ocr.work.ModelDownloadWorker
 import com.inkwell.notes.ocr.work.PageIndexer
@@ -104,6 +105,11 @@ class IndexingSchedulerImpl(private val graph: AppGraph) : IndexingScheduler {
             .addTag(TAG_WORK)
             .build()
         enqueue("re-index") { it.enqueueUniqueWork(WORK_REINDEX_ALL, ExistingWorkPolicy.REPLACE, request) }
+    }
+
+    override suspend fun sourcePdfAppending(docId: String, oldSize: Long, newSize: Long) {
+        // Scanned-page results are keyed by the source file's size; carry them over to the new one.
+        indexer.imageCache.copySize(docId, ImageOcrCache.PDF_PAGE_KEY, oldSize, newSize)
     }
 
     /** Runs the catch-up soon (e.g. after a handwriting model arrived or search was opened). */

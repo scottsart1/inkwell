@@ -60,29 +60,29 @@ internal class ImageExporter(private val context: Context, private val source: D
             return
         }
         withContext(Dispatchers.IO) {
-            val zip = ZipOutputStream(NonClosingOutputStream(out))
-            renderers.forEachIndexed { n, (index, render) ->
-                coroutineContext.ensureActive()
-                val bmp = render()
-                val bytes = try {
-                    ByteArrayOutputStream(bmp.byteCount / 6).also { compress(bmp, jpeg, options.jpegQuality, it) }.toByteArray()
-                } finally {
-                    bmp.recycle()
+            // Closing finishes the zip and frees its Deflater; the caller's stream is only flushed.
+            ZipOutputStream(NonClosingOutputStream(out)).use { zip ->
+                renderers.forEachIndexed { n, (index, render) ->
+                    coroutineContext.ensureActive()
+                    val bmp = render()
+                    val bytes = try {
+                        ByteArrayOutputStream(bmp.byteCount / 6).also { compress(bmp, jpeg, options.jpegQuality, it) }.toByteArray()
+                    } finally {
+                        bmp.recycle()
+                    }
+                    // Images are already compressed: store them.
+                    val entry = ZipEntry(ExportNaming.pageImageName(index, options.format)).apply {
+                        method = ZipEntry.STORED
+                        size = bytes.size.toLong()
+                        compressedSize = bytes.size.toLong()
+                        crc = CRC32().also { it.update(bytes) }.value
+                    }
+                    zip.putNextEntry(entry)
+                    zip.write(bytes)
+                    zip.closeEntry()
+                    progress(n + 1, renderers.size)
                 }
-                // Images are already compressed: store them.
-                val entry = ZipEntry(ExportNaming.pageImageName(index, options.format)).apply {
-                    method = ZipEntry.STORED
-                    size = bytes.size.toLong()
-                    compressedSize = bytes.size.toLong()
-                    crc = CRC32().also { it.update(bytes) }.value
-                }
-                zip.putNextEntry(entry)
-                zip.write(bytes)
-                zip.closeEntry()
-                progress(n + 1, renderers.size)
             }
-            zip.finish()
-            zip.flush()
         }
     }
 

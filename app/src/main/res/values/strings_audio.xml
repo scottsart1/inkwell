@@ -3,6 +3,8 @@
     <!-- Notification -->
     <string name="audio_notif_recording">Recording · %1$s · %2$s</string>
     <string name="audio_notif_paused">Paused · %1$s · %2$s</string>
+    <string name="audio_notif_recording_generic">Recording · %1$s</string>
+    <string name="audio_notif_paused_generic">Paused · %1$s</string>
     <string name="audio_notif_text">Tap to return to your notes</string>
     <string name="audio_notif_pause">Pause</string>
     <string name="audio_notif_resume">Resume</string>

@@ -24,13 +24,20 @@ internal abstract class IndexingWorker(context: Context, params: WorkerParameter
     protected val indexer: PageIndexer by lazy { PageIndexer(graph) }
     /** Language tags whose handwriting model was missing while this worker ran. */
     protected val pendingModels = LinkedHashSet<String>()
+    /** Pages of a batch whose indexing failed; the batch went on and is retried as a whole. */
+    private var pageFailures = 0
 
     final override suspend fun doWork(): Result {
         graph = AppGraph.get(applicationContext)
         return try {
             work()
             pendingModels.forEach { scheduler()?.scheduleModelDownload(it) }
-            Result.success()
+            if (pageFailures == 0) {
+                Result.success()
+            } else {
+                Log.w(javaClass.simpleName, "$pageFailures page(s) failed (attempt ${runAttemptCount + 1})")
+                if (runAttemptCount + 1 < MAX_ATTEMPTS) Result.retry() else Result.failure()
+            }
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
@@ -48,6 +55,21 @@ internal abstract class IndexingWorker(context: Context, params: WorkerParameter
         outcome.handwritingPendingTag?.let { pendingModels += it }
     }
 
+    /**
+     * [page] for batch workers: a page whose recognition keeps failing must not stop every page
+     * after it from being indexed, so the failure is counted and the batch goes on.
+     */
+    protected suspend fun batchPage(docId: String, pageId: String, force: Boolean, since: Long = 0L) {
+        try {
+            page(docId, pageId, force, since)
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            pageFailures++
+            Log.w(javaClass.simpleName, "Page indexing failed: ${e.javaClass.simpleName}")
+        }
+    }
+
     /** Indexes every page of [docId] (meta and typed body too). Stops early when the worker is stopped. */
     protected suspend fun document(docId: String, force: Boolean, since: Long = 0L) {
         indexer.indexMeta(docId)
@@ -57,7 +79,7 @@ internal abstract class IndexingWorker(context: Context, params: WorkerParameter
         val pages = withContext(Dispatchers.IO) { graph.db.pages().forDocument(docId) }
         for (p in pages) {
             if (isStopped) return
-            page(docId, p.id, force, since)
+            batchPage(docId, p.id, force, since)
         }
     }
 
@@ -142,7 +164,7 @@ internal class CatchUpWorker(context: Context, params: WorkerParameters) : Index
             .sortedByDescending { it.modifiedAt }
         for (p in stale) {
             if (isStopped) return
-            page(p.documentId, p.id, force = false)
+            batchPage(p.documentId, p.id, force = false)
         }
         for (d in docs.values.filter { it.kind == DocKind.TYPED }) {
             if (isStopped) return

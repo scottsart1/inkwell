@@ -84,8 +84,8 @@ private fun DestinationRow(
             TargetChip(stringResource(R.string.sync_chip_device), selected = true, onClick = null, enabled = false, icon = Icons.Outlined.TabletAndroid)
             val folderOn = OutputTarget.FOLDER in targets
             TargetChip(stringResource(R.string.sync_chip_folder), selected = folderOn, onClick = { onToggle(kind, OutputTarget.FOLDER, !folderOn) }, icon = Icons.Outlined.Folder)
-            val vaultOn = OutputTarget.VAULT in targets
-            TargetChip(stringResource(R.string.sync_chip_vault), selected = vaultOn, onClick = { onToggle(kind, OutputTarget.VAULT, !vaultOn) }, icon = Icons.Outlined.CloudUpload)
+            val driveOn = OutputTarget.DRIVE in targets
+            TargetChip(stringResource(R.string.sync_chip_drive), selected = driveOn, onClick = { onToggle(kind, OutputTarget.DRIVE, !driveOn) }, icon = Icons.Outlined.CloudUpload)
         }
     }
     val c = Inkwell.colors

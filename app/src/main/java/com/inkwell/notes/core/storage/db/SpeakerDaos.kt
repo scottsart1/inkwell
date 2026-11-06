@@ -30,7 +30,7 @@ interface SpeakerDao {
     @Query("SELECT * FROM people WHERE id = :id")
     suspend fun person(id: String): PersonEntity?
 
-    @Query("SELECT * FROM people WHERE name = :name COLLATE NOCASE LIMIT 1")
+    @Query("SELECT * FROM people WHERE name = :name COLLATE NOCASE ORDER BY createdAt, id LIMIT 1")
     suspend fun personNamed(name: String): PersonEntity?
 
     @Upsert

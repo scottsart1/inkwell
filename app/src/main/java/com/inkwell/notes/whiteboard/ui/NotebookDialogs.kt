@@ -48,7 +48,8 @@ fun SendToNotebookDialog(ops: BoardOperations, onDismiss: () -> Unit, onSent: (D
             if (result != null) onSent(result.first, result.second)
         }
     }
-    PickerShell(stringResource(R.string.wb_send_choose), onDismiss) {
+    // Stays open while sending: closing it would cancel the send halfway.
+    PickerShell(stringResource(R.string.wb_send_choose), { if (!working) onDismiss() }) {
         if (working) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = Inkwell.colors.accent, strokeWidth = 2.dp)
@@ -92,7 +93,8 @@ fun AddNotebookPageDialog(ops: BoardOperations, loadPages: suspend (String) -> L
         }
         return
     }
-    PickerShell(current.title, onDismiss, onBack = { doc = null }) {
+    // Stays open while adding: closing it would cancel the copy halfway.
+    PickerShell(current.title, { if (!working) onDismiss() }, onBack = { if (!working) doc = null }) {
         val p = pages
         when {
             p == null || working -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

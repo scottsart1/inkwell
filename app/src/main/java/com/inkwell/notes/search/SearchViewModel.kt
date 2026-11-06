@@ -82,7 +82,9 @@ class SearchViewModel(private val graph: AppGraph, initialQuery: String) : ViewM
         viewModelScope.launch {
             combine(queries, semanticFlow) { q, s -> q.trim() to s }
                 .debounce(DEBOUNCE_MS)
-                .distinctUntilChanged()
+                // Skip a repeat only while its results are still shown: clearing the field resets
+                // them outside this pipeline, and a quick retype of the same text must search again.
+                .distinctUntilChanged { old, new -> old == new && _state.value.searchedQuery == new.first }
                 .collectLatest { (q, s) -> runSearch(q, s) }
         }
     }

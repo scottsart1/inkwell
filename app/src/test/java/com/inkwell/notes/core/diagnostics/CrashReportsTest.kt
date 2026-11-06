@@ -93,6 +93,18 @@ class CrashReportsTest {
     }
 
     @Test
+    fun theSavedExitTimeIsReadBackOrLeftToTheFallback() {
+        // The report is written at the next start; the card shows when the app actually stopped.
+        assertEquals(1_760_000_000_123L, CrashText.savedExitTime("1760000000123"))
+        assertEquals(1_760_000_000_123L, CrashText.savedExitTime(" 1760000000123\n"))
+        assertNull(CrashText.savedExitTime(null))
+        assertNull(CrashText.savedExitTime(""))
+        assertNull(CrashText.savedExitTime("yesterday"))
+        assertNull(CrashText.savedExitTime("0"))
+        assertNull(CrashText.savedExitTime("-5"))
+    }
+
+    @Test
     fun theReportNamesWhatHappened() {
         val r = CrashText.report(
             app = "1.1.1 (3), Android 16, samsung SM-X930",

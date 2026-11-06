@@ -22,7 +22,7 @@ import java.io.OutputStream
 
 /**
  * All user preferences as one typed [AppSettings] object, persisted as JSON with
- * DataStore. Secrets (API keys, vault password) never live here; see [SecretStore].
+ * DataStore. Secrets (API keys) never live here; see [SecretStore].
  */
 class SettingsRepository(context: Context, scope: CoroutineScope) {
     private val store: DataStore<AppSettings> = DataStoreFactory.create(

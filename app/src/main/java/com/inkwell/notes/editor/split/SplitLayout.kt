@@ -35,6 +35,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -85,9 +86,14 @@ fun SplitLayout(leftDocId: String, rightDocId: String, nav: AppNavigator, keepSc
     var first by rememberSaveable { mutableStateOf(leftDocId) }
     var second by rememberSaveable { mutableStateOf(rightDocId) }
     var fraction by rememberSaveable { mutableFloatStateOf(0.5f) }
+    // The editor that opened this split (null when opened from the library), taken once: a split
+    // left with Back must not leave it behind for the next split, whose "close pane" would then
+    // return to the library instead of opening the remaining document.
+    val openedFrom by rememberSaveable { mutableStateOf(EditorSession.splitOrigin.also { EditorSession.splitOrigin = null }) }
     val controllers = remember { mutableStateMapOf<String, NotebookController>() }
     val bounds = remember { mutableStateMapOf<String, Rect>() }
     val drag = remember { PaneDrag() }
+    val panes = remember { HashMap<String, @Composable (Boolean, Modifier) -> Unit>() }
     var origin by remember { mutableStateOf(Offset.Zero) }
     val density = LocalDensity.current
 
@@ -101,10 +107,8 @@ fun SplitLayout(leftDocId: String, rightDocId: String, nav: AppNavigator, keepSc
 
     fun closePane(docId: String) {
         val remaining = otherOf(docId)
-        val origin = EditorSession.splitOrigin
-        EditorSession.splitOrigin = null
         nav.back()
-        if (remaining != origin) nav.openDocumentById(remaining)
+        if (remaining != openedFrom) nav.openDocumentById(remaining)
     }
 
     fun sinkFor(docId: String) = object : SelectionDragSink {
@@ -143,33 +147,43 @@ fun SplitLayout(leftDocId: String, rightDocId: String, nav: AppNavigator, keepSc
             if (total > 0f) fraction = Placement.splitFraction(fraction + delta / total)
         }
         val ids = listOf(first, second)
-        val paneContent: @Composable (String, Boolean, Modifier) -> Unit = { id, isFirst, mod ->
-            key(id) {
-                NotebookPane(
-                    docId = id,
-                    initialPage = null,
-                    nav = nav,
-                    mode = PaneMode.SPLIT,
-                    modifier = mod
-                        .onGloballyPositioned { bounds[id] = it.boundsInRoot() }
-                        .border(1.dp, Inkwell.colors.outline),
-                    split = SplitHooks(
-                        isLeft = isFirst,
-                        onClosePane = { closePane(id) },
-                        onSendToOther = { content, from -> send(content, from) },
-                        dragSink = sinkFor(id),
-                    ),
-                    onController = { c -> if (c == null) controllers.remove(id) else controllers[id] = c },
-                )
+        // Each pane is movable content keyed by its document, so swapping the panes or switching
+        // between stacked and side by side moves the editors instead of recreating them (which
+        // would drop undo history, selection, open panels and text being typed).
+        fun paneContent(id: String): @Composable (Boolean, Modifier) -> Unit = panes.getOrPut(id) {
+            movableContentOf { isFirst: Boolean, mod: Modifier ->
+                // Movable content resets the compound key, so without key(id) both panes would share
+                // rememberSaveable keys (camera capture, launcher keys, scroll and search state) and,
+                // after a swap, restore each other's saved values.
+                key(id) {
+                    // One sink per pane: a new object would restart the drag handle's gesture mid-drag.
+                    val sink = remember { sinkFor(id) }
+                    NotebookPane(
+                        docId = id,
+                        initialPage = null,
+                        nav = nav,
+                        mode = PaneMode.SPLIT,
+                        modifier = mod
+                            .onGloballyPositioned { bounds[id] = it.boundsInRoot() }
+                            .border(1.dp, Inkwell.colors.outline),
+                        split = SplitHooks(
+                            isLeft = isFirst,
+                            onClosePane = { closePane(id) },
+                            onSendToOther = { content, from -> send(content, from) },
+                            dragSink = sink,
+                        ),
+                        onController = { c -> if (c == null) controllers.remove(id) else controllers[id] = c },
+                    )
+                }
             }
         }
         if (stacked) {
             Column(Modifier.fillMaxSize()) {
-                ids.forEachIndexed { i, id -> paneContent(id, i == 0, Modifier.fillMaxWidth().weight(if (i == 0) fraction else 1f - fraction)) }
+                ids.forEachIndexed { i, id -> paneContent(id)(i == 0, Modifier.fillMaxWidth().weight(if (i == 0) fraction else 1f - fraction)) }
             }
         } else {
             Row(Modifier.fillMaxSize()) {
-                ids.forEachIndexed { i, id -> paneContent(id, i == 0, Modifier.fillMaxHeight().weight(if (i == 0) fraction else 1f - fraction)) }
+                ids.forEachIndexed { i, id -> paneContent(id)(i == 0, Modifier.fillMaxHeight().weight(if (i == 0) fraction else 1f - fraction)) }
             }
         }
         // Divider: a thin draggable strip on the pane boundary (so pens still reach the pane

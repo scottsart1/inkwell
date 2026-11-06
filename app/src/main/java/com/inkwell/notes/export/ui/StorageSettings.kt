@@ -6,7 +6,7 @@ import com.inkwell.notes.export.sync.ui.StorageSettingsScreen
 
 /**
  * "Where outputs are saved": per output type (notes, transcripts, audio) choose this device
- * only, a folder (SAF), and/or the yourpitbox.com notes vault (URL + password, test connection),
+ * only, a folder (SAF), and/or Google Drive (connect, test, disconnect),
  * sync now, backup/restore. Scrolls itself when given a bounded height; lays out flat inside a
  * host that already scrolls.
  */

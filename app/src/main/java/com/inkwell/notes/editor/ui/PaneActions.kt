@@ -1,9 +1,9 @@
 package com.inkwell.notes.editor.ui
 
-import android.graphics.PointF
 import android.graphics.RectF
 import android.net.Uri
 import android.util.Log
+import androidx.compose.runtime.snapshotFlow
 import com.inkwell.notes.R
 import com.inkwell.notes.app.AppNavigator
 import com.inkwell.notes.audio.RecordingState
@@ -38,8 +38,6 @@ import com.inkwell.notes.editor.selectionAiContext
 import com.inkwell.notes.editor.ui.pages.PaperChoice
 import com.inkwell.notes.editor.ui.selection.SelectionAction
 import com.inkwell.notes.editor.ui.toolbar.ColorTarget
-import com.inkwell.notes.ink.ItemRef
-import com.inkwell.notes.ink.ItemType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -132,21 +130,7 @@ class PaneActions(
 
     // ------------------------------------------------------------------ Text
 
-    fun commitText(req: TextEditRequest, text: String, config: TextConfig) {
-        controller.textEdit = null
-        when {
-            req.sticky -> req.itemId?.let { canvas.updateSticky(ItemRef(req.pageId, it, ItemType.STICKY), text) }
-            req.itemId == null -> if (text.isNotBlank()) canvas.insertText(req.pageIndex, text, PointF(req.pageX, req.pageY), config, req.origin)
-            text.isBlank() -> {
-                canvas.selectItems(req.pageId, listOf(req.itemId))
-                canvas.deleteSelection()
-            }
-            else -> canvas.updateText(ItemRef(req.pageId, req.itemId, ItemType.TEXT), text, config)
-        }
-        // Only a format the user chose in the overlay becomes the text tool's default; fixing a
-        // typo in an old 24pt red box must not turn every new box 24pt red.
-        if (!req.sticky && config != req.config && config != controller.tools.state.text) controller.updateTools(controller.tools.updateText { config })
-    }
+    fun commitText(req: TextEditRequest, text: String, config: TextConfig) = controller.commitText(req, text, config)
 
     /** "Add text" from the long-press menu: a new box where the user pressed. */
     fun startTextAt(pageIndex: Int, pageX: Float, pageY: Float, viewX: Float, viewY: Float) {
@@ -204,7 +188,11 @@ class PaneActions(
         ui.pendingPlacement = null
         if (file == null) return
         if (success && file.length() > 0) {
-            controller.insertImageFrom(Uri.fromFile(file), placement, deleteAfter = file)
+            scope.launch {
+                // After process death the result arrives before the document is on the canvas.
+                if (!controller.bound) snapshotFlow { controller.bound }.first { it }
+                controller.insertImageFrom(Uri.fromFile(file), placement, deleteAfter = file)
+            }
         } else {
             scope.launch(Dispatchers.IO) { file.delete() }
         }
@@ -481,7 +469,8 @@ class PaneActions(
             messages.show(str(R.string.editor_split_first_page))
             return
         }
-        documentOp(R.string.editor_busy_splitting, R.string.editor_split_failed, R.string.editor_split_to) {
+        // The moved pages are copied, then deleted here: ink written meanwhile would be lost.
+        documentOp(R.string.editor_busy_splitting, R.string.editor_split_failed, R.string.editor_split_to, lockInput = true) {
             graph.pdf.splitDocument(controller.docId, at)
         }
     }
@@ -493,10 +482,15 @@ class PaneActions(
         }
     }
 
-    private fun documentOp(busyRes: Int, failRes: Int, doneRes: Int, block: suspend () -> DocumentMeta) {
+    private fun documentOp(busyRes: Int, failRes: Int, doneRes: Int, lockInput: Boolean = false, block: suspend () -> DocumentMeta) {
         scope.launch {
-            controller.saveNow()
-            val r = controller.busy.run(str(busyRes)) { catchingNonCancel { block() } }
+            if (lockInput) controller.inputLocked = true
+            val r = try {
+                controller.saveNow()
+                controller.busy.run(str(busyRes)) { catchingNonCancel { block() } }
+            } finally {
+                if (lockInput) controller.inputLocked = false
+            }
             r.onSuccess { doc -> messages.show(str(doneRes, doc.title), str(R.string.editor_open)) { nav.openDocument(doc) } }
                 .onFailure { Log.w(TAG, "Document operation failed: ${it.javaClass.simpleName}"); messages.show(str(failRes)) }
         }
@@ -512,6 +506,7 @@ class PaneActions(
     // ------------------------------------------------------------------ Keyboard
 
     fun onKey(action: EditorAction): Boolean {
+        if (controller.inputLocked) return false
         when (action) {
             EditorAction.UNDO -> canvas.undo()
             EditorAction.REDO -> canvas.redo()

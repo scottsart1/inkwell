@@ -35,6 +35,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -75,6 +76,9 @@ import com.inkwell.notes.ui.theme.Inkwell
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/** The rail's expanded folder ids. */
+private val ExpandedFoldersSaver = listSaver<Set<String>, String>(save = { it.toList() }, restore = { it.toSet() })
+
 private fun LibraryLocation.key(): String = when (this) {
     LibraryLocation.Root -> "root"
     is LibraryLocation.InFolder -> "f:$folderId"
@@ -100,7 +104,8 @@ internal fun LibraryHome(vm: LibraryViewModel, nav: AppNavigator) {
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
-    var expanded by remember { mutableStateOf(emptySet<String>()) }
+    // Saveable: the library leaves the composition while a document is open and comes back to it.
+    var expanded by rememberSaveable(stateSaver = ExpandedFoldersSaver) { mutableStateOf(emptySet<String>()) }
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var rootOffset by remember { mutableStateOf(Offset.Zero) }
     val rootFocus = remember { FocusRequester() }

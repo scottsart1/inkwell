@@ -25,7 +25,7 @@ class RecordingControllerImpl(private val graph: AppGraph) : RecordingController
     override fun start(docId: String, title: String?) {
         val context = graph.context
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            RecordingRuntime.mutableState.value = RecordingState.Error(context.getString(R.string.audio_error_permission))
+            RecordingRuntime.reportError(context.getString(R.string.audio_error_permission))
             return
         }
         val current = state.value
@@ -39,7 +39,7 @@ class RecordingControllerImpl(private val graph: AppGraph) : RecordingController
             ContextCompat.startForegroundService(context, RecordingService.startIntent(context, docId, title))
         } catch (e: Exception) {
             Log.w(TAG, "Could not start the recording service", e)
-            RecordingRuntime.mutableState.value = RecordingState.Error(context.getString(R.string.audio_error_background))
+            RecordingRuntime.reportError(context.getString(R.string.audio_error_background))
         }
     }
 

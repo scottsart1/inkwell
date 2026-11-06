@@ -65,7 +65,7 @@ internal object SettingsCatalog {
         SettingsSection.OCR -> "Handwriting languages, OCR and search index"
         SettingsSection.AI -> "Your own keys, models and routing"
         SettingsSection.USAGE -> "Tokens and estimated cost"
-        SettingsSection.STORAGE -> "Folders, notes vault and backups"
+        SettingsSection.STORAGE -> "Folders, Google Drive and backups"
         SettingsSection.PRIVACY -> "App lock, screenshots and AI data"
         SettingsSection.ABOUT -> "Version, storage and licences"
     }

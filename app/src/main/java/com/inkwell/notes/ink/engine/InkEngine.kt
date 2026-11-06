@@ -460,9 +460,8 @@ internal class InkEngine(val view: InkCanvasView) : ToolHost, CommandTarget, Ren
         h.setContent(loaded)
         render.onPageEdited(h, prev, null, null)
         if (h.pendingAdds.isNotEmpty()) {
-            // Ink written before the page finished loading goes on top of it.
-            var z = loaded.maxZ() + 1
-            val adds = h.pendingAdds.map { Items.withZ(it, z++) }
+            // Ink written before the page finished loading goes on top of it, in its own order.
+            val adds = ContentOps.stackFrom(h.pendingAdds, loaded.maxZ() + 1)
             h.pendingAdds.clear()
             val before = h.content
             val after = ContentOps.add(before, adds)

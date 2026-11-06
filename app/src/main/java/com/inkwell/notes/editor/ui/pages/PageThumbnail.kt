@@ -40,7 +40,9 @@ private const val THUMB_PX = 240
 fun rememberPageThumbnail(controller: NotebookController, page: PageMeta, index: Int): Bitmap? {
     val key = "${page.id}@${page.modifiedAt}@${page.rotation}@${page.paper.hashCode()}"
     val bitmap by produceState(controller.thumbCache.get(key), key) {
-        if (value != null) return@produceState
+        // The initial value is used only once: after an edit, rotation or paper change [value]
+        // still holds the old bitmap (shown until the new one is ready), so look up this key.
+        controller.thumbCache.get(key)?.let { value = it; return@produceState }
         val fromService = withContext(Dispatchers.IO) {
             catchingNonCancel { controller.graph.thumbnails.pageThumbnail(controller.docId, page.id, THUMB_PX) }.getOrNull()
         }

@@ -83,11 +83,11 @@ fun SearchPanelContent(
         }
         delay(250)
         loading = true
-        val r = withContext(Dispatchers.IO) { catchingNonCancel { controller.graph.search.search(q, limit = 200) } }
+        // Scoped to this document before the limit: a library-wide top list can miss its hits.
+        val r = withContext(Dispatchers.IO) { catchingNonCancel { controller.graph.search.searchInDocument(controller.docId, q, limit = 500) } }
         loading = false
         failed = r.isFailure
         results = r.getOrNull()
-            ?.filter { it.documentId == controller.docId }
             ?.sortedWith(compareBy({ it.pageIndex ?: Int.MAX_VALUE }, { it.timestampMs ?: 0L }))
             .orEmpty()
     }

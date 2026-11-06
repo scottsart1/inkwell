@@ -58,7 +58,7 @@ class FileStore(context: Context) {
         @Throws(IOException::class)
         fun writeAtomically(target: File, keepBackup: Boolean = true, write: (FileOutputStream) -> Unit) {
             target.parentFile?.mkdirs()
-            val tmp = File(target.parentFile, target.name + ".tmp")
+            val tmp = tempOf(target)
             FileOutputStream(tmp).use { out ->
                 write(out)
                 out.flush()
@@ -76,5 +76,8 @@ class FileStore(context: Context) {
         }
 
         fun backupOf(target: File): File = File(target.parentFile, target.name + ".bak")
+
+        /** The temp file [writeAtomically] writes before renaming it over [target]. */
+        fun tempOf(target: File): File = File(target.parentFile, target.name + ".tmp")
     }
 }

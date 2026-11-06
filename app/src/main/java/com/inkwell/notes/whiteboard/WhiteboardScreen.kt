@@ -2,6 +2,8 @@ package com.inkwell.notes.whiteboard
 
 import android.content.ActivityNotFoundException
 import android.graphics.PointF
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -88,6 +90,7 @@ import com.inkwell.notes.whiteboard.kit.RenameDialog
 import com.inkwell.notes.whiteboard.kit.SlimTopBar
 import com.inkwell.notes.whiteboard.kit.UiMessage
 import com.inkwell.notes.whiteboard.logic.BoardAnchors
+import com.inkwell.notes.whiteboard.logic.ExportMath
 import com.inkwell.notes.whiteboard.ui.AddNotebookPageDialog
 import com.inkwell.notes.whiteboard.ui.BoardRecordButton
 import com.inkwell.notes.whiteboard.ui.BoardRecordingDialogs
@@ -106,7 +109,9 @@ import com.inkwell.notes.whiteboard.ui.StickyEditor
 import com.inkwell.notes.whiteboard.ui.TextBoxEditor
 import com.inkwell.notes.whiteboard.ui.ZoomControls
 import com.inkwell.notes.whiteboard.ui.toolLabel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 private enum class BoardDialog { PDF_SNIPPET, SEND_TO_NOTEBOOK, ADD_PAGE, RENAME, EXPORT_BOARD }
@@ -132,6 +137,8 @@ fun WhiteboardScreen(docId: String, nav: AppNavigator) {
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, controller) {
         val observer = LifecycleEventObserver { _, event ->
+            // Stopping (background, app lock, possible process death) commits an open text box too.
+            if (event == Lifecycle.Event.ON_STOP) controller.commitPendingEdits()
             if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) controller.flush()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -185,7 +192,8 @@ private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigato
     var dialog by remember { mutableStateOf<BoardDialog?>(null) }
     var minimapCollapsed by rememberSaveable { mutableStateOf<Boolean?>(null) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
-    var pendingExport by remember { mutableStateOf<File?>(null) }
+    // Saved: the save picker may outlive this activity (process death while it is open).
+    var pendingExportPath by rememberSaveable { mutableStateOf<String?>(null) }
     var menuOpen by remember { mutableStateOf(false) }
 
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -203,10 +211,26 @@ private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigato
         }
     }
     val saveExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
-        val file = pendingExport
-        pendingExport = null
-        if (uri != null && file != null) {
+        val path = pendingExportPath
+        pendingExportPath = null
+        if (uri != null) {
             scope.launch {
+                val file = withContext(Dispatchers.IO) { path?.let { File(it) }?.takeIf { it.isFile } }
+                if (file == null) {
+                    // The rendered image is gone: remove the empty document the picker created,
+                    // but never a file the user chose to overwrite (it still has content).
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            val size = context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                                val col = c.getColumnIndex(OpenableColumns.SIZE)
+                                if (col >= 0 && c.moveToFirst() && !c.isNull(col)) c.getLong(col) else null
+                            }
+                            if (ExportMath.mayDeleteUnwrittenTarget(size)) DocumentsContract.deleteDocument(context.contentResolver, uri)
+                        }
+                    }
+                    controller.messages.tryEmit(UiMessage(R.string.cd_file_save_failed))
+                    return@launch
+                }
                 runCatching { FileSharing.copyTo(context, file, uri) }
                     .onSuccess { controller.messages.tryEmit(UiMessage(R.string.cd_file_saved)) }
                     .onFailure { controller.messages.tryEmit(UiMessage(R.string.cd_file_save_failed)) }
@@ -245,6 +269,7 @@ private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigato
         val wide = maxWidth >= 1000.dp
         val narrow = maxWidth < 600.dp
         val collapsed = minimapCollapsed ?: narrow
+        LaunchedEffect(collapsed) { controller.setMinimapShown(!collapsed) }
         // An overlay panel (between the phone and wide layouts) covers the canvas' right edge.
         val coverPx = if (panel != null && !wide && !phone) minOf(with(density) { Dimens.panelWidth.toPx() }, canvasSize.width.toFloat()) else 0f
         SideEffect { audio.panelCoverPx = coverPx }
@@ -363,10 +388,16 @@ private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigato
                     RecordingDock(controller.docId, Modifier.fillMaxSize())
 
                     controller.textEdit?.let { req ->
-                        TextBoxEditor(req, controller.page?.paper?.color ?: 0xFFFFFFFF.toInt()) { text, cfg -> controller.commitText(req, text, cfg) }
+                        TextBoxEditor(
+                            req,
+                            controller.page?.paper?.color ?: 0xFFFFFFFF.toInt(),
+                            onDraft = { text, cfg -> controller.onTextDraft(req, text, cfg) },
+                        ) { text, cfg -> controller.commitText(req, text, cfg) }
                     }
                     controller.stickyEdit?.let { req ->
-                        StickyEditor(req) { text, color -> controller.commitSticky(req, text, color) }
+                        StickyEditor(req, onDraft = { text, color -> controller.onStickyDraft(req, text, color) }) { text, color ->
+                            controller.commitSticky(req, text, color)
+                        }
                     }
                     controller.longPress?.let { req ->
                         LongPressMenu(
@@ -393,11 +424,11 @@ private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigato
                                                 controller.messages.tryEmit(UiMessage(R.string.cd_share_unavailable))
                                             }
                                             ExportAction.SAVE -> {
-                                                pendingExport = file
+                                                pendingExportPath = file.absolutePath
                                                 try {
                                                     saveExport.launch(file.name)
                                                 } catch (e: ActivityNotFoundException) {
-                                                    pendingExport = null
+                                                    pendingExportPath = null
                                                     controller.messages.tryEmit(UiMessage(R.string.cd_file_save_failed))
                                                 }
                                             }

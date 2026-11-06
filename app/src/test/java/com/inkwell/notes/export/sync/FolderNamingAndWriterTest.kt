@@ -143,6 +143,21 @@ class FolderNamingAndWriterTest {
     }
 
     @Test
+    fun `a directory holding sub-directories is never renamed in place`() {
+        val root = JavaFileNode(tmp)
+        // A notebook and a library folder both called "Physics" share Inkwell/Physics.
+        val shared = FolderWriter.ensureDirs(root, listOf("Inkwell", "Physics"))
+        FolderWriter.ensureDirs(root, listOf("Inkwell", "Physics", "Lecture 1"))
+        val parent = FolderWriter.findDir(root, listOf("Inkwell"))!!
+        assertFalse(FolderWriter.renameDirInPlace(shared, "Physics summary", parent))
+        assertTrue(File(tmp, "Inkwell/Physics/Lecture 1").isDirectory)
+
+        val alone = FolderWriter.ensureDirs(root, listOf("Inkwell", "Chemistry"))
+        assertTrue(FolderWriter.renameDirInPlace(alone, "Chemistry summary", parent))
+        assertTrue(File(tmp, "Inkwell/Chemistry summary").isDirectory)
+    }
+
+    @Test
     fun `probe creates and removes its test file`() {
         FolderWriter.probe(JavaFileNode(tmp), 42)
         assertEquals(0, tmp.list()!!.size)

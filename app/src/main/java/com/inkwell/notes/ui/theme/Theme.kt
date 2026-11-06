@@ -181,13 +181,17 @@ object Dimens {
     val recorderSliverTouch = 32.dp
 }
 
+/** Whether [mode] shows the dark palette; follows the system setting live for [ThemeMode.SYSTEM]. */
+@Composable
+fun isDarkTheme(mode: ThemeMode): Boolean = when (mode) {
+    ThemeMode.SYSTEM -> isSystemInDarkTheme()
+    ThemeMode.LIGHT -> false
+    ThemeMode.DARK -> true
+}
+
 @Composable
 fun InkwellTheme(mode: ThemeMode = ThemeMode.SYSTEM, content: @Composable () -> Unit) {
-    val dark = when (mode) {
-        ThemeMode.SYSTEM -> isSystemInDarkTheme()
-        ThemeMode.LIGHT -> false
-        ThemeMode.DARK -> true
-    }
+    val dark = isDarkTheme(mode)
     val c = if (dark) DarkInkwell else LightInkwell
     val scheme = if (dark) {
         darkColorScheme(

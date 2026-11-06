@@ -27,6 +27,10 @@ data class ModelSpec(
     val usdPerAudioMinute: Double? = null,
     /** Came from the provider's live model list. */
     val live: Boolean = false,
+    /** Prompts above this many input tokens are billed at the long-context prices below, for the whole request. */
+    val longContextThresholdTokens: Int? = null,
+    val longInputUsdPerMTok: Double? = null,
+    val longOutputUsdPerMTok: Double? = null,
 ) {
     fun has(c: AiCapability) = c in capabilities
     fun toInfo(provider: AiProviderId) = AiModelInfo(
@@ -66,12 +70,22 @@ data class ChatCall(
 
 enum class StopReason { END, MAX_TOKENS, REFUSAL, CONTENT_FILTER, OTHER }
 
+/** One billed attempt of a response (Anthropic `usage.iterations`); [model] when the provider names it. */
+data class UsageIteration(val type: String?, val model: String?, val inputTokens: Int, val outputTokens: Int)
+
 /** Decoded piece of a streamed response. */
 sealed interface StreamPart {
     data class Text(val text: String) : StreamPart
     /** Reasoning shown separately from the answer (DeepSeek reasoner `reasoning_content`). */
     data class Reasoning(val text: String) : StreamPart
-    data class Usage(val inputTokens: Int?, val outputTokens: Int?) : StreamPart
+    data class Usage(
+        val inputTokens: Int?,
+        val outputTokens: Int?,
+        /** Model that actually produced the response, when the provider reports it. */
+        val model: String? = null,
+        /** Per-attempt usage when the response took several attempts (server-side fallbacks). */
+        val iterations: List<UsageIteration>? = null,
+    ) : StreamPart
     data class Stop(val reason: StopReason, val raw: String?) : StreamPart
     data class Failure(val failure: AiFailure) : StreamPart
     /** Explicit end of stream (`[DONE]`, `message_stop`). */
@@ -119,6 +133,9 @@ interface ProviderAdapter {
     fun chatBody(call: ChatCall): JsonObject
     fun chatRequest(call: ChatCall): Request
     fun newDecoder(): StreamDecoder
+
+    /** True when the provider may serve [call] with another model than the requested one (server-side fallbacks). */
+    fun mayServeOtherModel(call: ChatCall): Boolean = false
 
     /** A different request variant to try once after a 400 (e.g. renamed max-tokens parameter), else null. */
     fun variantAfterError(call: ChatCall, status: Int, body: String): ChatCall? = null

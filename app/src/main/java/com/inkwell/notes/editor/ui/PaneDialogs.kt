@@ -22,6 +22,7 @@ import com.inkwell.notes.audio.RecordingState
 import com.inkwell.notes.core.model.DocKind
 import com.inkwell.notes.core.model.PenPreset
 import com.inkwell.notes.editor.NotebookController
+import com.inkwell.notes.editor.catchingNonCancel
 import com.inkwell.notes.editor.saveSelectionAsElement
 import com.inkwell.notes.editor.ui.dialogs.AiSendConfirmDialog
 import com.inkwell.notes.editor.ui.dialogs.ConfirmDialog
@@ -130,7 +131,8 @@ fun PaneDialogHost(controller: NotebookController, ui: PaneUiState, actions: Pan
                 onInsert = { e ->
                     ui.dialog = null
                     controller.uiScope.launch {
-                        val fragment = controller.elements.prepareForInsert(e, controller.docId)
+                        // Copying its images can fail (storage full): report it, never crash.
+                        val fragment = catchingNonCancel { controller.elements.prepareForInsert(e, controller.docId) }.getOrNull()
                         if (fragment == null) controller.messages.show(controller.str(R.string.editor_element_unreadable))
                         else controller.canvas.insertItems(null, fragment, null, select = true)
                     }

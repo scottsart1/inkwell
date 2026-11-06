@@ -74,8 +74,9 @@ object TokenEstimator {
 object CostCalculator {
     /** Null when the model has no known price for a component that was used. */
     fun tokens(spec: ModelSpec, inputTokens: Int, outputTokens: Int): Double? {
-        val inPrice = spec.inputUsdPerMTok
-        val outPrice = spec.outputUsdPerMTok
+        val long = spec.longContextThresholdTokens?.let { inputTokens > it } == true
+        val inPrice = if (long) spec.longInputUsdPerMTok ?: spec.inputUsdPerMTok else spec.inputUsdPerMTok
+        val outPrice = if (long) spec.longOutputUsdPerMTok ?: spec.outputUsdPerMTok else spec.outputUsdPerMTok
         if (inPrice == null && outPrice == null) return null
         if (inputTokens > 0 && inPrice == null) return null
         if (outputTokens > 0 && outPrice == null) return null

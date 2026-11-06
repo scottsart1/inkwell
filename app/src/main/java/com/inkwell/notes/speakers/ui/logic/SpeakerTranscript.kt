@@ -41,7 +41,7 @@ object SpeakerTranscript {
     /**
      * The voice as the panel shows it. [storedName] is a real name written into the transcript
      * for a voice that has no person any more (the person was deleted): transcripts, exports,
-     * search and the vault keep that name, so the panel shows it too instead of "Speaker N".
+     * search and Google Drive keep that name, so the panel shows it too instead of "Speaker N".
      */
     fun voice(s: RecordingSpeaker, storedName: String? = null): Voice {
         val stored = storedName?.trim()?.takeIf { s.personId == null && it.isNotEmpty() && !GENERIC_NAME.matches(it) }

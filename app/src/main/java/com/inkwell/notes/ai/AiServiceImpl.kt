@@ -2,6 +2,8 @@ package com.inkwell.notes.ai
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
 import androidx.core.graphics.scale
 import com.inkwell.notes.ai.chat.ChatStore
 import com.inkwell.notes.ai.context.ContextAssembler
@@ -125,6 +127,10 @@ class AiServiceImpl(private val graph: AppGraph) : AiService {
                     setInvalid(provider, check.message)
                     graph.settings.update { s -> s.copy(ai = s.ai.updateProvider(provider) { it.copy(validatedAt = 0) }) }
                 }
+                // The provider accepted the key but refused the model list (403). Older builds flagged that as a
+                // rejected key; clear that stale flag without marking the key validated. A 403 can also come
+                // before the key is checked (region, proxy), so a flag a 401 set stays.
+                check.authenticated -> if (isStaleForbiddenFlag(invalidReason(provider))) setInvalid(provider, null)
             }
         }
         return if (check.ok) Result.success(check.message) else Result.failure(AiException(check.message))
@@ -241,15 +247,38 @@ class AiServiceImpl(private val graph: AppGraph) : AiService {
         fun sanitizeKey(raw: String): String =
             raw.filterNot { it.isWhitespace() || Character.getType(it) == Character.FORMAT.toInt() }
 
+        /**
+         * True for an "Invalid" reason older builds stored after a 403 ("refused access"), which
+         * did not mean the key was rejected; false for a 401's "rejected the API key" or no flag.
+         */
+        fun isStaleForbiddenFlag(reason: String?): Boolean =
+            reason != null && ("(403)" in reason || "refused access" in reason)
+
+        /**
+         * PNG of [src] with its long edge at most [maxEdge], flattened onto white: a selection is
+         * ink on a transparent background, and vision APIs that drop the alpha channel read
+         * transparent pixels as black, so dark handwriting would arrive as a black image.
+         */
         fun encodePng(src: Bitmap, maxEdge: Int): ByteArray {
             val long = max(src.width, src.height)
             val bmp = if (long > maxEdge) {
                 val s = maxEdge.toFloat() / long
                 src.scale((src.width * s).roundToInt().coerceAtLeast(1), (src.height * s).roundToInt().coerceAtLeast(1))
             } else src
+            val flat = if (bmp.hasAlpha()) {
+                Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888).also { white ->
+                    white.eraseColor(Color.WHITE)
+                    // A hardware bitmap cannot be drawn on a software canvas: read it through a copy.
+                    val drawable = if (bmp.config == Bitmap.Config.HARDWARE) bmp.copy(Bitmap.Config.ARGB_8888, false) else bmp
+                    Canvas(white).drawBitmap(drawable, 0f, 0f, null)
+                    if (drawable !== bmp) drawable.recycle()
+                    white.setHasAlpha(false)
+                }
+            } else bmp
             val out = ByteArrayOutputStream()
-            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-            if (bmp !== src) bmp.recycle()
+            flat.compress(Bitmap.CompressFormat.PNG, 100, out)
+            if (flat !== src) flat.recycle()
+            if (bmp !== src && bmp !== flat) bmp.recycle()
             return out.toByteArray()
         }
     }

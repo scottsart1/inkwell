@@ -24,6 +24,7 @@ import com.inkwell.notes.app.AppGraph
 import com.inkwell.notes.core.model.DocumentMeta
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -116,25 +117,29 @@ fun rememberDocumentScanner(
 /**
  * Imports what [rememberDocumentScanner] returned, preferring the scanner's PDF and falling
  * back to its page images. The document gets the standard "YYYYMMDD_Untitled" name, so it is
- * auto-named from its recognised text. The scanner's temporary files are removed afterwards.
+ * auto-named from its recognised text. The scanner's temporary files are removed afterwards,
+ * whether or not the import succeeded.
  */
 suspend fun PdfService.importScanResult(pdfUri: Uri?, imageUris: List<Uri>, folderId: String? = null): DocumentMeta {
     val service = this
-    val doc = when {
-        pdfUri != null -> try {
-            if (service is PdfServiceImpl) service.importScannedPdf(pdfUri, folderId) else service.importPdf(pdfUri, folderId)
-        } catch (c: CancellationException) {
-            throw c
-        } catch (e: Exception) {
-            if (imageUris.isEmpty()) throw e
-            Log.w(TAG, "Scanned PDF import failed (${e.javaClass.simpleName}); using page images")
-            service.importImages(imageUris, folderId, title = null)
+    try {
+        return when {
+            pdfUri != null -> try {
+                if (service is PdfServiceImpl) service.importScannedPdf(pdfUri, folderId) else service.importPdf(pdfUri, folderId)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                if (imageUris.isEmpty()) throw e
+                Log.w(TAG, "Scanned PDF import failed (${e.javaClass.simpleName}); using page images")
+                service.importImages(imageUris, folderId, title = null)
+            }
+            imageUris.isNotEmpty() -> service.importImages(imageUris, folderId, title = null)
+            else -> throw nothingScanned()
         }
-        imageUris.isNotEmpty() -> service.importImages(imageUris, folderId, title = null)
-        else -> throw nothingScanned()
+    } finally {
+        // The scan cannot be imported again from these files, so they go even when the import failed.
+        withContext(NonCancellable) { deleteScannerFiles(listOfNotNull(pdfUri) + imageUris) }
     }
-    deleteScannerFiles(listOfNotNull(pdfUri) + imageUris)
-    return doc
 }
 
 /** [importScanResult] on the process graph's PDF service. */

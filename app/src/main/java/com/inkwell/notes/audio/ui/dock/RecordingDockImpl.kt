@@ -45,6 +45,7 @@ import com.inkwell.notes.audio.logic.DockMetrics
 import com.inkwell.notes.audio.logic.DockMode
 import com.inkwell.notes.audio.logic.DockPlacement
 import com.inkwell.notes.audio.logic.DockStateMachine
+import com.inkwell.notes.audio.recorder.RecordingRuntime
 import com.inkwell.notes.core.model.DockSide
 import com.inkwell.notes.ui.theme.Dimens
 import kotlinx.coroutines.coroutineScope
@@ -65,6 +66,7 @@ internal fun RecordingDockImpl(docId: String, modifier: Modifier = Modifier) {
     val recording = graph.recording.state.collectAsStateWithLifecycle()
     val active by remember { derivedStateOf { (recording.value as? RecordingState.Active)?.let { ActiveKey(it.recordingId, it.docId, it.paused) } } }
     val error by remember { derivedStateOf { recording.value as? RecordingState.Error } }
+    val errorReport by RecordingRuntime.errorReport.collectAsStateWithLifecycle()
 
     // Only one dock shows the recorder when two editors are on screen (split view).
     val token = remember { Any() }
@@ -81,7 +83,7 @@ internal fun RecordingDockImpl(docId: String, modifier: Modifier = Modifier) {
             key(a.recordingId) { DockedControl(graph, a, recording, otherDocument = a.docId != docId) }
         }
         val e = error
-        if (e != null && DockRegistry.isPrimary(token)) DockErrorToast(e)
+        if (e != null && DockRegistry.isPrimary(token)) DockErrorToast(e, errorReport)
         // After a recording of this document: offer to name its new voices (one dock per document).
         if (DockRegistry.shows(token, docId, docId)) DockNamingPrompt(graph, docId, recording)
     }

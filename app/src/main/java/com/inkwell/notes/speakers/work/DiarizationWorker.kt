@@ -87,20 +87,23 @@ class DiarizationWorker(appContext: Context, params: WorkerParameters) : Corouti
         val embeddings = HashMap<String, FloatArray>(resumed?.second.orEmpty())
         if (resumed == null) withContext(Dispatchers.IO) { service.store.deleteWork(recordingId) }
 
-        // A native fault kills the process with nothing to catch, and the job would run (and
-        // crash) again on every start: after repeated deaths inside native code, stop here.
         val guard = service.nativeRuns
-        if (!withContext(Dispatchers.IO) { guard.start(recordingId) }) {
-            Log.e(TAG, "Identification kept stopping the app on this recording; not retried")
-            runCatching { discard(service, checkpointFile, recordingId) }
-            return failure(R.string.speaker_engine_error_crashed)
-        }
         var analysed = false
 
         val audio = graph.speakerAudio as? SpeakerAudioImpl
+        // One native pass at a time in this process (see NativeRunGuard.pass); released in the finally.
+        guard.pass.lock()
         val dispatcher = SherpaVoiceEngine.newDispatcher()
         var engine: SherpaVoiceEngine? = null
         try {
+            // A native fault kills the process with nothing to catch, and the job would run (and
+            // crash) again on every start: after repeated deaths inside native code, stop here.
+            // Inside the try: a cancellation after the mark is written still reaches finish().
+            if (!withContext(Dispatchers.IO) { guard.start(recordingId) }) {
+                Log.e(TAG, "Identification kept stopping the app on this recording; not retried")
+                runCatching { discard(service, checkpointFile, recordingId) }
+                return failure(R.string.speaker_engine_error_crashed)
+            }
             engine = withContext(dispatcher) {
                 SherpaVoiceEngine(service.models.file(SpeakerModelSpecs.SEGMENTATION), service.models.file(SpeakerModelSpecs.EMBEDDING))
             }
@@ -123,6 +126,7 @@ class DiarizationWorker(appContext: Context, params: WorkerParameters) : Corouti
                     windowsDone = w.index + 1,
                     turns = checkpoint.turns + result.turns,
                     voices = checkpoint.voices + result.voices,
+                    failures = 0,
                 )
                 saveCheckpoint(service, checkpointFile, recordingId, checkpoint, embeddings)
                 report(windows, w.index + 1, 0f, force = true)
@@ -150,15 +154,23 @@ class DiarizationWorker(appContext: Context, params: WorkerParameters) : Corouti
             return failure(R.string.speaker_engine_error_unsupported)
         } catch (e: OutOfMemoryError) {
             Log.e(TAG, "Out of memory while identifying speakers")
-            return retryOrFail { discard(service, checkpointFile, recordingId) }
+            return failedRun(service, checkpointFile, recordingId, checkpoint, embeddings)
         } catch (e: Exception) {
             Log.e(TAG, "Identification failed", e)
-            return retryOrFail { discard(service, checkpointFile, recordingId) }
+            return failedRun(service, checkpointFile, recordingId, checkpoint, embeddings)
         } finally {
-            withContext(NonCancellable + dispatcher) { engine?.close() }
-            dispatcher.close()
-            // Back from native code (whatever the outcome): this run did not crash the app.
-            withContext(NonCancellable + Dispatchers.IO) { guard.finish(recordingId, completed = analysed) }
+            try {
+                // One non-cancellable block: returning into the cancelled job between the steps
+                // (a dispatcher switch) would throw there and skip the rest.
+                withContext(NonCancellable) {
+                    withContext(dispatcher) { engine?.close() }
+                    dispatcher.close()
+                    // Back from native code (whatever the outcome): this run did not crash the app.
+                    withContext(Dispatchers.IO) { guard.finish(recordingId, completed = analysed) }
+                }
+            } finally {
+                guard.pass.unlock()
+            }
         }
 
         val final = checkpoint
@@ -182,7 +194,7 @@ class DiarizationWorker(appContext: Context, params: WorkerParameters) : Corouti
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Saving the speakers failed", e)
-            retryOrFail { discard(service, checkpointFile, recordingId) }
+            failedRun(service, checkpointFile, recordingId, final, embeddings)
         }
     }
 
@@ -240,7 +252,7 @@ class DiarizationWorker(appContext: Context, params: WorkerParameters) : Corouti
         recordingId: String,
         c: DiarizationCheckpoint,
         embeddings: Map<String, FloatArray>,
-    ) = withContext(Dispatchers.IO) {
+    ): Boolean = withContext(Dispatchers.IO) {
         try {
             // Embeddings first: a checkpoint never claims embeddings that were not stored.
             val dim = embeddings.values.firstOrNull()?.size
@@ -252,17 +264,40 @@ class DiarizationWorker(appContext: Context, params: WorkerParameters) : Corouti
                 )
             }
             FileStore.writeAtomically(file, keepBackup = false) { it.write(DiarizationCheckpoint.encode(c).toByteArray()) }
+            true
         } catch (e: Exception) {
             Log.w(TAG, "Could not save identification progress: ${e.javaClass.simpleName}")
+            false
         }
     }
 
     private fun failure(res: Int) = Result.failure(workDataOf(Diarizations.KEY_ERROR to applicationContext.getString(res)))
 
-    /** Retries a few times; on giving up runs [cleanup] (temporary voice data must not linger). */
-    private suspend fun retryOrFail(cleanup: suspend () -> Unit = {}): Result {
-        if (runAttemptCount < MAX_ATTEMPTS) return Result.retry()
-        runCatching { cleanup() }
+    /** Retries a few times. */
+    private fun retryOrFail(): Result =
+        if (runAttemptCount < MAX_ATTEMPTS) Result.retry() else failure(R.string.speaker_engine_error_failed)
+
+    /**
+     * Analysis or saving failed with [c] as the progress so far: retries a few times in a row,
+     * counted in the checkpoint (system stops and waits also raise runAttemptCount, and must
+     * not use up the budget of a long recording). On giving up deletes the checkpoint and the
+     * window embeddings: temporary voice data must not linger.
+     */
+    private suspend fun failedRun(
+        service: SpeakerServiceImpl,
+        file: File,
+        recordingId: String,
+        c: DiarizationCheckpoint,
+        embeddings: Map<String, FloatArray>,
+    ): Result {
+        val failures = c.failures + 1
+        if (failures < MAX_ATTEMPTS) {
+            // When the count cannot be saved, fall back on the run count so this still ends.
+            if (saveCheckpoint(service, file, recordingId, c.copy(failures = failures), embeddings) || runAttemptCount < MAX_ATTEMPTS) {
+                return Result.retry()
+            }
+        }
+        runCatching { discard(service, file, recordingId) }
         return failure(R.string.speaker_engine_error_failed)
     }
 

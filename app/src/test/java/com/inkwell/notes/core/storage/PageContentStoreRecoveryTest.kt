@@ -10,6 +10,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import java.io.File
@@ -150,6 +151,38 @@ class PageContentStoreRecoveryTest {
         store.delete("d", "p")
         assertFalse(f.exists())
         assertFalse(FileStore.backupOf(f).exists())
+        assertFalse(FileStore.tempOf(f).exists())
         assertTrue(store.load("d", "p").isEmpty)
+    }
+
+    @Test fun strictLoadRefusesAPageWhoseFileAndBackupAreUnreadable() = runTest {
+        // Saved only once (duplicated, imported, restored): there is no backup to fall back to.
+        store.save("d", "p", page("a"))
+        val f = files.pageFile("d", "p")
+        assertFalse(FileStore.backupOf(f).exists())
+        f.writeBytes(ByteArray(64) { 0x7f })
+        try {
+            store.load("d", "p", strict = true)
+            fail("an unreadable page loaded as empty, so the editor would save over it")
+        } catch (e: UnreadablePageException) {
+            // expected
+        }
+        // A damaged backup is no better.
+        FileStore.backupOf(f).writeBytes(ByteArray(0))
+        try {
+            store.load("d", "p", strict = true)
+            fail("an unreadable page with an unreadable backup loaded as empty")
+        } catch (e: UnreadablePageException) {
+            // expected
+        }
+        // Read-only callers keep getting an empty page, and the damaged bytes stay on disk.
+        assertTrue(store.load("d", "p").isEmpty)
+        assertEquals(64, f.length())
+    }
+
+    @Test fun strictLoadOfAPageWithoutFilesIsEmpty() = runTest {
+        assertTrue(store.load("none", "none", strict = true).isEmpty)
+        store.save("d", "p", PageContent.EMPTY)
+        assertTrue(store.load("d", "p", strict = true).isEmpty)
     }
 }

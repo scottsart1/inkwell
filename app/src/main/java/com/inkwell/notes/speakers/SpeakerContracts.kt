@@ -111,7 +111,7 @@ interface SpeakerService {
 
     /**
      * Forgets a person and their voiceprint. Their voices become unnamed ("Speaker N") again in
-     * every recording, so transcripts, search, exports and the vault agree with the panel.
+     * every recording, so transcripts, search, exports and Google Drive agree with the panel.
      */
     suspend fun deletePerson(personId: String)
 

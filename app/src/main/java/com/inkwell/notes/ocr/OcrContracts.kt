@@ -44,6 +44,9 @@ data class IndexedPassage(
 /** Local full-text index (Room FTS4) over every text source, with optional semantic search. */
 interface SearchIndex {
     suspend fun search(query: String, limit: Int = 60, semantic: Boolean = false): List<SearchHit>
+    /** Keyword search inside one document; the document filter applies before [limit]. */
+    suspend fun searchInDocument(docId: String, query: String, limit: Int = 500): List<SearchHit> =
+        search(query, limit).filter { it.documentId == docId }
     suspend fun indexDocumentMeta(doc: DocumentMeta)
     suspend fun replacePageText(docId: String, pageId: String, source: TextSource, blocks: List<RecognizedBlock>, engine: String)
     suspend fun replaceTranscript(docId: String, recordingId: String, segments: List<TranscriptSegment>, engine: String)
@@ -67,4 +70,11 @@ interface IndexingScheduler {
     fun documentMetaChanged(docId: String)
     /** Re-index everything (settings action). */
     fun reindexAll()
+
+    /**
+     * [docId]'s source PDF of [oldSize] bytes is about to be replaced by one of [newSize] bytes
+     * that keeps every existing page at its index (pages were appended). Recognition results of
+     * those pages stay valid, so scanned pages are not OCRed (or AI-transcribed, at a cost) again.
+     */
+    suspend fun sourcePdfAppending(docId: String, oldSize: Long, newSize: Long) {}
 }

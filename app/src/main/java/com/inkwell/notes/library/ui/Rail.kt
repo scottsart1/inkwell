@@ -199,7 +199,10 @@ internal fun LibraryRail(
                 selected = false,
                 drag = drag,
                 dropTarget = null,
-                onClick = { controller.nav.openSettings(SettingsSection.GENERAL) },
+                onClick = {
+                    controller.nav.openSettings(SettingsSection.GENERAL)
+                    onNavigated()
+                },
             )
         }
     }
@@ -387,7 +390,8 @@ private fun RailFolderRow(
         ) {
             FolderMenuItems { action ->
                 menuOffset = null
-                controller.onFolderAction(folder, action)
+                // "Open" navigates like a tap, which also closes the rail when it is a drawer.
+                if (action == FolderAction.OPEN) onOpen() else controller.onFolderAction(folder, action)
             }
         }
     }

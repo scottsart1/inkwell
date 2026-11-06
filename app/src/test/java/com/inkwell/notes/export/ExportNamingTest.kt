@@ -47,6 +47,26 @@ class ExportNamingTest {
         assertFalse(Character.isHighSurrogate(s.last()))
     }
 
+    @Test fun longNonLatinTitlesFitTheFileNameByteLimit() {
+        // ext4/f2fs refuse names over 255 bytes: 120 Korean or Chinese characters are 360 bytes.
+        for (title in listOf("한국어 노트".repeat(40), "漢字".repeat(100), "😀".repeat(100), "é".repeat(300), "x" + "語".repeat(150))) {
+            val name = ExportNaming.fileName(title, ExportFormat.DOCX, 1)
+            assertTrue(name, name.toByteArray(Charsets.UTF_8).size <= 255)
+            val second = ExportNaming.unique(name, listOf(name, "${name.substringBeforeLast('.')} (2).docx"))
+            assertTrue(second, second.toByteArray(Charsets.UTF_8).size <= 255)
+            assertTrue(name, name.endsWith(".docx") && !name.startsWith("."))
+            name.forEachIndexed { i, c ->
+                if (Character.isHighSurrogate(c)) assertTrue("lone surrogate in $name", i + 1 < name.length && Character.isLowSurrogate(name[i + 1]))
+                if (Character.isLowSurrogate(c)) assertTrue("lone surrogate in $name", i > 0 && Character.isHighSurrogate(name[i - 1]))
+            }
+        }
+        // Latin titles keep the character limit.
+        assertEquals(ExportNaming.MAX_BASE_LENGTH, ExportNaming.sanitize("a".repeat(300)).length)
+        assertEquals("日本語のノート", ExportNaming.sanitize("日本語のノート"))
+        assertEquals("ab", ExportNaming.truncateBytes("ab漢", 4))
+        assertEquals("ab漢", ExportNaming.truncateBytes("ab漢", 5))
+    }
+
     @Test fun extensionsAndZipsForMultiPageImages() {
         assertEquals("Notes.pdf", ExportNaming.fileName("Notes", ExportFormat.PDF, 4))
         assertEquals("Notes.png", ExportNaming.fileName("Notes", ExportFormat.PNG, 1))
@@ -111,11 +131,11 @@ class ExportNamingTest {
     @Test fun settingsLoseDeviceSpecificDestinations() {
         val s = AppSettings(
             theme = ThemeMode.DARK,
-            destinations = DestinationPrefs(folderUri = "content://tree/abc", folderLabel = "Drive", vaultUrl = "https://yourpitbox.com/notes/secret-link"),
+            destinations = DestinationPrefs(folderUri = "content://tree/abc", folderLabel = "Drive", driveAccount = "me@example.com"),
         )
         val clean = SettingsSanitizer.forBackup(s)
         assertNull(clean.destinations.folderUri)
-        assertEquals("", clean.destinations.vaultUrl)
+        assertNull("the Google account stays on this device", clean.destinations.driveAccount)
         assertEquals(ThemeMode.DARK, clean.theme)
 
         val current = AppSettings(privacy = PrivacyPrefs(appLock = true), destinations = DestinationPrefs(folderLabel = "Mine"))
@@ -165,8 +185,59 @@ class ExportNamingTest {
             } finally {
                 dir3.deleteRecursively()
             }
+            // When the limit is the free space, running into it means the device is full.
+            val dir4 = Files.createTempDirectory("zip-safety").toFile()
+            try {
+                ZipSafety.extract(
+                    ZipInputStream(ByteArrayInputStream(zipOf("big.bin" to ByteArray(5_000)))), dir4, 1_000,
+                    overBytes = com.inkwell.notes.export.backup.PackageException.Reason.NO_SPACE,
+                )
+                throw AssertionError("expected size limit")
+            } catch (e: com.inkwell.notes.export.backup.PackageException) {
+                assertEquals(com.inkwell.notes.export.backup.PackageException.Reason.NO_SPACE, e.reason)
+            } finally {
+                dir4.deleteRecursively()
+            }
+            // A library backup picked as a package is refused at its first entry, before any
+            // of its (possibly huge) documents is unpacked.
+            val dir5 = Files.createTempDirectory("zip-safety").toFile()
+            try {
+                val backup = zipOf(LibraryManifest.FILE to "{}".toByteArray(), "documents/a__1.inkwell" to ByteArray(5_000))
+                ZipSafety.extract(ZipInputStream(ByteArrayInputStream(backup)), dir5, 1_000_000, refuse = setOf(LibraryManifest.FILE))
+                throw AssertionError("expected a backup to be refused")
+            } catch (e: com.inkwell.notes.export.backup.PackageException) {
+                assertEquals(com.inkwell.notes.export.backup.PackageException.Reason.NOT_A_PACKAGE, e.reason)
+                assertTrue(dir5.walk().none { it.isFile })
+            } finally {
+                dir5.deleteRecursively()
+            }
         } finally {
             dir.deleteRecursively()
         }
+    }
+
+    @Test fun partialBackupsAreNeverKeptOrRestoredAsBackups() {
+        val cal = Calendar.getInstance(TimeZone.getDefault(), Locale.ROOT).apply { set(2026, Calendar.OCTOBER, 16, 9, 5, 0) }
+        val partial = BackupNaming.partialFileName(cal.timeInMillis)
+        assertEquals("Inkwell-backup-partial-20261016-0905.zip", partial)
+        assertFalse(BackupNaming.isBackupName(partial))
+        assertTrue(BackupNaming.isPartialName(partial))
+        assertTrue(BackupNaming.isPartialName("Inkwell-backup-partial-20261016-0905 (1).zip"))
+        assertFalse(BackupNaming.isPartialName(BackupNaming.fileName(cal.timeInMillis)))
+
+        data class F(val name: String, val modified: Long)
+        val hour = 60L * 60 * 1000
+        val now = 100 * hour
+        val files = listOf(
+            F("Inkwell-backup-partial-20261001-0100.zip", now - 30 * hour), // killed run
+            F("Inkwell-backup-partial-20261016-0905.zip", now - hour), // possibly still running
+            F("Inkwell-backup-partial-20261002-0100.zip", 0), // provider without times
+            F("Inkwell-backup-20261001-0100.zip", now - 30 * hour),
+            F("partial.zip", now - 30 * hour),
+        )
+        val stale = BackupNaming.stalePartials(files, { it.name }, { it.modified }, now, 24 * hour)
+        assertEquals(listOf("Inkwell-backup-partial-20261001-0100.zip"), stale.map { it.name })
+        // Partial files never count towards the backups that are kept.
+        assertTrue(BackupNaming.toDelete(files, { it.name }, { it.modified }, keep = 1).isEmpty())
     }
 }

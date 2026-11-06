@@ -10,7 +10,7 @@ import java.util.Locale
 
 /**
  * library.json of a backup: the folder tree, where each document lives, and the user's
- * preferences without anything device-specific or secret (API keys and the vault password
+ * preferences without anything device-specific or secret (API keys
  * live only in the keystore and are never read here).
  */
 @Serializable
@@ -62,6 +62,18 @@ object BackupNaming {
 
     fun isBackupName(name: String): Boolean = NAME.matches(name)
 
+    /** "Inkwell-backup-partial-YYYYMMDD-HHmm.zip": a backup still being written, renamed when complete. */
+    fun partialFileName(now: Long, locale: Locale = Locale.ROOT): String =
+        PARTIAL_PREFIX + SimpleDateFormat("yyyyMMdd-HHmm", locale).format(Date(now)) + ".zip"
+
+    fun isPartialName(name: String): Boolean = name.startsWith(PARTIAL_PREFIX) && name.endsWith(".zip")
+
+    /** Partial backups not written to for [maxAgeMs]: left by a backup whose process was killed. */
+    fun <T> stalePartials(files: List<T>, name: (T) -> String, lastModified: (T) -> Long, now: Long, maxAgeMs: Long): List<T> =
+        files.filter { isPartialName(name(it)) && lastModified(it) > 0 && now - lastModified(it) > maxAgeMs }
+
+    private const val PARTIAL_PREFIX = "Inkwell-backup-partial-"
+
     /**
      * Backups to delete so only the [keep] newest remain. Newest is decided by the
      * timestamp in the name, then by last-modified time (several backups in one minute).
@@ -104,7 +116,7 @@ object BackupNaming {
 /** Removes what must never leave the device or does not carry over to another one. */
 object SettingsSanitizer {
     fun forBackup(s: AppSettings): AppSettings = s.copy(
-        destinations = s.destinations.copy(folderUri = null, folderLabel = null, vaultUrl = ""),
+        destinations = s.destinations.copy(folderUri = null, folderLabel = null, driveAccount = null),
         ai = s.ai.copy(providers = s.ai.providers.map { it.copy(validatedAt = 0) }),
     )
 

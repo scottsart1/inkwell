@@ -71,7 +71,9 @@ class BoardSource(
 ) : InkDocumentSource {
 
     override suspend fun loadContent(page: PageMeta): PageContent {
-        val content = saver.saver.pending(page.id)?.content ?: graph.pageStore.load(docId, page.id)
+        // Strict: an unreadable board fails to load (the canvas then refuses edits) instead of
+        // showing empty and having the next autosave replace the damaged file and its backup.
+        val content = saver.saver.pending(page.id)?.content ?: graph.pageStore.load(docId, page.id, strict = true)
         onLoaded(page, content)
         return content
     }

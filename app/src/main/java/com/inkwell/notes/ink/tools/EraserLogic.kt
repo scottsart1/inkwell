@@ -16,6 +16,8 @@ import com.inkwell.notes.ink.geometry.StrokeSplitter
 import com.inkwell.notes.ink.geometry.WordClusterer
 import com.inkwell.notes.ink.model.ContentOps
 import com.inkwell.notes.ink.model.ItemIndex
+import com.inkwell.notes.ink.model.Items
+import com.inkwell.notes.ink.select.SelectionClipboard
 import java.util.UUID
 
 /** Which items an eraser may touch. Text boxes, images and stickies are never erased. */
@@ -47,12 +49,35 @@ class EraserEngine(private val idFactory: () -> String = { UUID.randomUUID().toS
         val hits = index.hitBySegment(ax, ay, bx, by, radius) { EraserRules.allows(filter, it) }
         if (hits.isEmpty()) return content
         val tmp = Bounds()
-        return when (mode) {
+        val out = when (mode) {
             EraserMode.STROKE -> removeAll(content, hits, changed, tmp)
             EraserMode.PRECISION -> precision(content, hits, ax, ay, bx, by, radius, changed, tmp)
             EraserMode.SEGMENT -> segment(content, index, filter, hits, bx, by, changed, tmp)
             EraserMode.WORD -> word(content, index, filter, hits, changed, tmp)
         }
+        return detachConnectors(content, out, changed, tmp)
+    }
+
+    /**
+     * Connectors attached to items that are gone in [out] (erased, or split into new pieces) keep
+     * a free end where the item was, as when deleting a selection. Their old and new areas both
+     * join [changed], since the end still attached elsewhere can re-route.
+     */
+    private fun detachConnectors(before: PageContent, out: PageContent, changed: Bounds, tmp: Bounds): PageContent {
+        if (out === before || out.connectors.isEmpty()) return out
+        val keep = ContentOps.allItems(out).mapTo(HashSet<String>()) { Items.id(it) }
+        val gone = HashSet<String>()
+        for (it in ContentOps.allItems(before)) { val id = Items.id(it); if (id !in keep) gone += id }
+        val detached = HashMap<String, ConnectorItem>()
+        for (c in out.connectors) {
+            if (c.fromItemId !in gone && c.toItemId !in gone) continue
+            changed.union(ItemGeometry.bounds(c, tmp, before))
+            detached[c.id] = SelectionClipboard.detachOutside(c, before, keep)
+        }
+        if (detached.isEmpty()) return out
+        val result = ContentOps.replace(out, detached)
+        for (c in detached.values) changed.union(ItemGeometry.bounds(c, tmp, result))
+        return result
     }
 
     private fun removeAll(content: PageContent, items: List<Any>, changed: Bounds, tmp: Bounds): PageContent {

@@ -21,27 +21,31 @@ import kotlinx.coroutines.launch
  * land as on), on the app scope so a change survives leaving the screen.
  */
 internal class SettingsWriter private constructor(private val graph: AppGraph) {
-    private class Pending(val transform: (AppSettings) -> AppSettings, val onError: (Throwable) -> Unit)
+    private class Pending(val transform: (AppSettings) -> AppSettings, val onError: (Throwable) -> Unit, val onApplied: () -> Unit)
 
     private val queue = Channel<Pending>(Channel.UNLIMITED)
 
     init {
         graph.appScope.launch(Dispatchers.IO) {
             for (p in queue) {
-                try {
+                val applied = try {
                     graph.settings.update(p.transform)
+                    true
                 } catch (c: CancellationException) {
                     throw c
                 } catch (e: Exception) {
                     Log.w(TAG, "Settings update failed: ${e.javaClass.simpleName}")
                     runCatching { p.onError(e) }
+                    false
                 }
+                if (applied) runCatching { p.onApplied() }
             }
         }
     }
 
-    fun submit(onError: (Throwable) -> Unit = {}, transform: (AppSettings) -> AppSettings) {
-        queue.trySend(Pending(transform, onError))
+    /** [onApplied] runs (on IO) once the change is saved and visible in `graph.settings.current`. */
+    fun submit(onError: (Throwable) -> Unit = {}, onApplied: () -> Unit = {}, transform: (AppSettings) -> AppSettings) {
+        queue.trySend(Pending(transform, onError, onApplied))
     }
 
     companion object {
@@ -64,8 +68,9 @@ internal class SettingsActions(
 ) {
     private val writer = SettingsWriter.get(graph)
 
-    fun update(transform: (AppSettings) -> AppSettings) {
-        writer.submit(onError = { message("Couldn't save that change. Please try again.") }, transform = transform)
+    /** Queues a settings change; [onApplied] runs once it is saved (for work that reads the new value). */
+    fun update(onApplied: () -> Unit = {}, transform: (AppSettings) -> AppSettings) {
+        writer.submit(onError = { message("Couldn't save that change. Please try again.") }, onApplied = onApplied, transform = transform)
     }
 
     fun message(text: String) {

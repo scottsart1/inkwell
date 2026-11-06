@@ -47,8 +47,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -64,9 +66,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -109,9 +113,17 @@ internal fun SearchQueryField(
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val textStyle = MaterialTheme.typography.titleLarge.copy(color = c.ink, fontWeight = FontWeight.Normal)
+    // Text set from outside (the query the screen opened with, a recent search) gets the cursor at
+    // its end. The String overload of BasicTextField starts it at 0, so typing on after the screen
+    // focuses the field would insert in front of the query.
+    var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    val shown = if (field.text == value) field else TextFieldValue(value, TextRange(value.length))
     BasicTextField(
-        value = value,
-        onValueChange = onValueChange,
+        value = shown,
+        onValueChange = { v ->
+            field = v
+            if (v.text != value) onValueChange(v.text)
+        },
         modifier = modifier.focusRequester(focusRequester),
         textStyle = textStyle,
         singleLine = true,

@@ -30,6 +30,16 @@ data class TranscriptCheckpoint(
 }
 
 object TranscriptAssembly {
+    /** Below this a segment holds no words; the transcription API refuses audio under 0.1 s. */
+    const val MIN_TRANSCRIBE_MS = 250L
+
+    /**
+     * True for a segment too short to send: the sliver left when recording stopped (or paused)
+     * just after a segment switch. Sending it fails the request, and with it the whole job on
+     * every retry. 0 means the duration is unknown: such segments are still sent.
+     */
+    fun tooShortToTranscribe(durationMs: Long): Boolean = durationMs in 1 until MIN_TRANSCRIBE_MS
+
     /** Start of segment [index] on the recording's timeline. */
     fun offsetOf(durations: List<Long>, index: Int): Long = durations.take(index.coerceAtLeast(0)).sumOf { it.coerceAtLeast(0) }
 

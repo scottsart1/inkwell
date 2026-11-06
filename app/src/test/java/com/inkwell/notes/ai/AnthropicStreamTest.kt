@@ -128,6 +128,39 @@ class AnthropicStreamTest {
         }
     }
 
+    @Test fun fallbackServedResponseIsPricedAtTheServingModel() {
+        // Sticky routing: message_start already names the fallback model (claude-opus-5: $5 / $25).
+        val fallbackStart = start.replace("\"model\":\"claude-opus-5-5\"", "\"model\":\"claude-opus-5\"")
+        h.enqueueSse(stream(fallbackStart, delta(0, "Hi"), messageDelta("end_turn", 9), stop))
+        val done = h.events(request()).last() as EngineEvent.Completed
+        assertEquals(25 * 5.0 / 1e6 + 9 * 25.0 / 1e6, done.usage.estimatedCostUsd!!, 1e-12)
+        assertEquals("claude-opus-5", h.usage.rows.last().model)
+    }
+
+    @Test fun everyFallbackAttemptIsCountedAtItsOwnModel() {
+        val fallbackStart = start.replace("\"model\":\"claude-opus-5-5\"", "\"model\":\"claude-opus-5\"")
+        val finalDelta = sseEvent(
+            "message_delta",
+            """{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":9,""" +
+                """"iterations":[{"type":"message","input_tokens":25,"output_tokens":4},{"type":"fallback_message","input_tokens":25,"output_tokens":9}]}}""",
+        )
+        h.enqueueSse(stream(fallbackStart, delta(0, "Hi"), finalDelta, stop))
+        val done = h.events(request()).last() as EngineEvent.Completed
+        // Declined attempt at Opus 5.5 ($4 / $20), serving attempt at Opus 5 ($5 / $25).
+        assertEquals((25 * 4.0 + 4 * 20.0 + 25 * 5.0 + 9 * 25.0) / 1e6, done.usage.estimatedCostUsd!!, 1e-12)
+        assertEquals(50, done.usage.inputTokens)
+        assertEquals(13, done.usage.outputTokens)
+        assertEquals("claude-opus-5", h.usage.rows.last().model)
+    }
+
+    @Test fun servedModelIsIgnoredWithoutFallbacks() {
+        // claude-haiku-4-5 is not sent with fallbacks: the requested model's prices apply ($1 / $5).
+        h.enqueueSse(stream(start, delta(0, "Hi"), messageDelta("end_turn", 9), stop))
+        val done = h.events(request(ModelRef(AiProviderId.ANTHROPIC, "claude-haiku-4-5"))).last() as EngineEvent.Completed
+        assertEquals(25 * 1.0 / 1e6 + 9 * 5.0 / 1e6, done.usage.estimatedCostUsd!!, 1e-12)
+        assertEquals("claude-haiku-4-5", h.usage.rows.last().model)
+    }
+
     @Test fun maxTokensStopIsReported() {
         h.enqueueSse(stream(start, delta(0, "Long answer"), messageDelta("max_tokens", 16000), stop))
         val done = h.events(request()).last() as EngineEvent.Completed

@@ -72,27 +72,44 @@ data class SyncStatus(
 
 /**
  * Copies outputs to the destinations the user chose for each output type (notes,
- * transcripts, audio): a SAF folder (Drive, Files, SD card) and/or the private notes vault
- * on yourpitbox.com. Local storage always remains the source of truth (local-first).
+ * transcripts, audio): a SAF folder (Files, SD card) and/or the user's Google Drive, so they can
+ * be read on another computer. Local storage always remains the source of truth (local-first).
  */
 interface SyncManager {
     val status: StateFlow<SyncStatus>
     fun onDocumentChanged(docId: String)
+    /**
+     * The document's title or its place in the library changed (moved, or a folder above it was
+     * renamed or moved): move the copies kept in sync destinations. Unlike [onDocumentChanged]
+     * this also covers transcripts and audio, and only renames/moves the document's Drive folder.
+     */
+    fun onDocumentMoved(docId: String) = onDocumentChanged(docId)
     fun onTranscriptReady(docId: String, recordingId: String)
     fun onRecordingFinished(docId: String, recordingId: String)
     fun onDocumentDeleted(docId: String)
     suspend fun syncNow(): SyncStatus
-    /** Checks URL + password against the vault; returns a human-readable result. */
-    suspend fun testVault(url: String, password: String): Result<String>
+    /** Checks that Google Drive accepts uploads for the connected account; returns a human-readable result. */
+    suspend fun testDrive(): Result<String>
     suspend fun testFolder(treeUri: Uri): Result<String>
 }
 
-data class BackupReport(val documents: Int, val bytes: Long, val file: Uri?)
+data class BackupReport(
+    val documents: Int,
+    val bytes: Long,
+    val file: Uri?,
+    /** Documents left out because they could not be packaged (unreadable files). */
+    val skipped: Int = 0,
+)
+
+/** Documents restored, and packages in the backup that could not be (damaged, from a newer app). */
+data class RestoreReport(val documents: Int, val skipped: Int = 0)
 
 /** Full-library backup (portable zip of native packages) — distinct from sync. */
 interface BackupService {
     suspend fun backupTo(treeOrFileUri: Uri, includeAudio: Boolean = true): BackupReport
     suspend fun restoreFrom(uri: Uri): Int
+    /** [restoreFrom] that also reports the documents it had to skip. */
+    suspend fun restoreWithReport(uri: Uri): RestoreReport = RestoreReport(restoreFrom(uri))
     /** Schedules automatic backups into the chosen folder (null disables). */
     fun scheduleAutomatic(treeUri: Uri?, intervalDays: Int = 1)
 }

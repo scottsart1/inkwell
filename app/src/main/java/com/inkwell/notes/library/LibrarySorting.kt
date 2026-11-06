@@ -2,7 +2,7 @@ package com.inkwell.notes.library
 
 import com.inkwell.notes.core.model.Folder
 import com.inkwell.notes.core.model.LibrarySort
-import java.text.Collator
+import com.inkwell.notes.core.storage.NaturalOrder as TitleOrder
 import java.util.Locale
 
 /** Sort options as shown in the sort menu, and folder ordering that matches document ordering. */
@@ -51,57 +51,11 @@ object LibrarySorting {
 
 /**
  * Case-insensitive, locale-aware comparison that orders digit runs by value:
- * "Lecture 2" < "Lecture 10", "20261015_A" < "20261016_A".
+ * "Lecture 2" < "Lecture 10", "20261015_A" < "20261016_A". The same order as document titles
+ * ([TitleOrder]), so folders and documents on one screen sort alike.
  */
 class NaturalOrder(locale: Locale = Locale.getDefault()) : Comparator<String> {
-    private val collator: Collator = Collator.getInstance(locale).apply { strength = Collator.SECONDARY }
+    private val titles = TitleOrder(locale)
 
-    override fun compare(a: String, b: String): Int {
-        var i = 0
-        var j = 0
-        while (i < a.length && j < b.length) {
-            val ca = a[i]
-            val cb = b[j]
-            if (ca.isDigit() && cb.isDigit()) {
-                val endA = digitRunEnd(a, i)
-                val endB = digitRunEnd(b, j)
-                val c = compareDigitRuns(a.substring(i, endA), b.substring(j, endB))
-                if (c != 0) return c
-                i = endA
-                j = endB
-            } else {
-                val endA = textRunEnd(a, i)
-                val endB = textRunEnd(b, j)
-                val c = collator.compare(a.substring(i, endA), b.substring(j, endB))
-                if (c != 0) return c
-                i = endA
-                j = endB
-            }
-        }
-        val rest = (a.length - i).compareTo(b.length - j)
-        if (rest != 0) return rest
-        // Equal under natural rules ("a1" vs "A01"): fall back to a full comparison for stability.
-        return collator.compare(a, b).takeIf { it != 0 } ?: a.compareTo(b)
-    }
-
-    private fun digitRunEnd(s: String, from: Int): Int {
-        var k = from
-        while (k < s.length && s[k].isDigit()) k++
-        return k
-    }
-
-    private fun textRunEnd(s: String, from: Int): Int {
-        var k = from
-        while (k < s.length && !s[k].isDigit()) k++
-        return k
-    }
-
-    private fun compareDigitRuns(x: String, y: String): Int {
-        val tx = x.trimStart('0')
-        val ty = y.trimStart('0')
-        if (tx.length != ty.length) return tx.length.compareTo(ty.length)
-        val c = tx.compareTo(ty)
-        if (c != 0) return c
-        return x.length.compareTo(y.length)
-    }
+    override fun compare(a: String, b: String): Int = titles.compare(a, b)
 }

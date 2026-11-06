@@ -1,6 +1,7 @@
 package com.inkwell.notes.ink.tools
 
 import com.inkwell.notes.core.model.AudioAnchor
+import com.inkwell.notes.core.model.ConnectorItem
 import com.inkwell.notes.core.model.EraserFilter
 import com.inkwell.notes.core.model.EraserMode
 import com.inkwell.notes.core.model.ImageItem
@@ -9,9 +10,11 @@ import com.inkwell.notes.core.model.PenType
 import com.inkwell.notes.core.model.TextItem
 import com.inkwell.notes.ink.TestInk
 import com.inkwell.notes.ink.geometry.Bounds
+import com.inkwell.notes.ink.geometry.ItemGeometry
 import com.inkwell.notes.ink.model.ItemIndex
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -108,5 +111,64 @@ class EraserEngineTest {
         val word2 = listOf(letter("d", 100f, 5000), letter("e", 120f, 5400))
         val out = erase(PageContent(strokes = word1 + word2), EraserMode.WORD, EraserFilter.ALL, 24f, 10f, r = 2f)
         assertEquals(listOf("d", "e"), out.strokes.map { it.id })
+    }
+
+    @Test fun erasingAnAttachedItemFreesTheConnectorEndWhereItWasAndDirtiesTheWholeLine() {
+        val a = TestInk.rect("a", 0f, 0f, 20f, 20f)
+        val b = TestInk.rect("b", 100f, 0f, 120f, 20f)
+        // Stale free-end coordinates (the item was moved after connecting).
+        val c = ConnectorItem("c", fromItemId = "a", toItemId = "b", fromX = 500f, fromY = 500f)
+        val content = PageContent(shapes = listOf(a, b), connectors = listOf(c))
+        val live = ItemGeometry.connectorEndpoints(c, content, FloatArray(4))
+        val changed = Bounds()
+        val out = engine.apply(content, ItemIndex.build(content, IdentityHashMap()), EraserMode.STROKE, EraserFilter.ALL, 0f, 10f, 0f, 10f, 3f, changed)
+        assertEquals(listOf("b"), out.shapes.map { it.id })
+        val freed = out.connectors.single()
+        assertNull(freed.fromItemId)
+        assertEquals("b", freed.toItemId)
+        assertEquals(live[0], freed.fromX, 0.01f)
+        assertEquals(live[1], freed.fromY, 0.01f)
+        // The whole connector is re-rendered, not just the erased box.
+        assertTrue(changed.right >= live[2])
+    }
+
+    @Test fun splittingAnAttachedStrokeFreesTheConnectorEnd() {
+        val s = TestInk.line("s", 0f, 10f, 100f, 10f)
+        val b = TestInk.rect("b", 200f, 0f, 220f, 20f)
+        val content = PageContent(strokes = listOf(s), shapes = listOf(b), connectors = listOf(ConnectorItem("c", fromItemId = "s", toItemId = "b")))
+        val out = erase(content, EraserMode.PRECISION, EraserFilter.INK_ONLY, 50f, 10f)
+        assertTrue(out.strokes.none { it.id == "s" })
+        val freed = out.connectors.single()
+        assertNull(freed.fromItemId)
+        assertEquals("b", freed.toItemId)
+        // Unrelated erasing leaves connectors alone.
+        val other = PageContent(strokes = listOf(TestInk.line("o", 0f, 80f, 100f, 80f)), connectors = content.connectors)
+        assertSame(other.connectors.single(), erase(other, EraserMode.STROKE, EraserFilter.ALL, 50f, 80f).connectors.single())
+    }
+
+    @Test fun erasingABoxLeavesAttachedArrowsEndingWhereTheBoxWas() {
+        // The arrow was drawn when box a stood far away; its stored start is that stale point.
+        val a = TestInk.rect("a", 0f, 0f, 100f, 50f)
+        val b = TestInk.rect("b", 300f, 0f, 400f, 50f)
+        val arrow = ConnectorItem("c", fromItemId = "a", toItemId = "b", fromX = -500f, fromY = -500f, toX = 350f, toY = 25f)
+        val loose = ConnectorItem("loose", fromItemId = "gone-long-ago", fromX = 700f, fromY = 700f, toX = 800f, toY = 800f)
+        val page = PageContent(shapes = listOf(a, b), connectors = listOf(arrow, loose))
+        for (mode in EraserMode.entries) {
+            val changed = Bounds()
+            val index = ItemIndex.build(page, IdentityHashMap())
+            // Erase on box a's left side (well away from the arrow).
+            val out = engine.apply(page, index, mode, EraserFilter.SHAPES_ONLY, 0f, 25f, 0f, 25f, 3f, changed)
+            assertEquals(mode.name, listOf("b"), out.shapes.map { it.id })
+            val c = out.connectors.single { it.id == "c" }
+            // Detached from the erased box at its right edge midpoint, still attached to b.
+            assertEquals(mode.name, null, c.fromItemId)
+            assertEquals(mode.name, 100f, c.fromX, 1e-3f)
+            assertEquals(mode.name, 25f, c.fromY, 1e-3f)
+            assertEquals(mode.name, "b", c.toItemId)
+            // A connector whose item vanished before this erase is left as it was.
+            assertSame(mode.name, loose, out.connectors.single { it.id == "loose" })
+            // The arrow's area is re-rendered.
+            assertTrue(mode.name, changed.contains(100f, 25f) && changed.contains(300f, 25f))
+        }
     }
 }

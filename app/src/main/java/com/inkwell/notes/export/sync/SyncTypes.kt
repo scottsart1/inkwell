@@ -17,13 +17,13 @@ enum class SyncScope {
     ALL,
     /** Folder copies only: needs no network. */
     FOLDER,
-    /** Audio for the vault only: waits for an unmetered network. */
-    VAULT_AUDIO;
+    /** Audio for Google Drive only: waits for an unmetered network. */
+    DRIVE_AUDIO;
 
     fun accepts(item: com.inkwell.notes.core.storage.db.SyncQueueEntity): Boolean = when (this) {
         ALL -> true
         FOLDER -> item.target == OutputTarget.FOLDER.name
-        VAULT_AUDIO -> item.target == OutputTarget.VAULT.name && item.kind == SyncKind.AUDIO.name
+        DRIVE_AUDIO -> item.target == OutputTarget.DRIVE.name && item.kind == SyncKind.AUDIO.name
     }
 }
 
@@ -48,6 +48,16 @@ fun DestinationPrefs.withTargets(kind: SyncKind, targets: Set<OutputTarget>): De
 
 val DestinationPrefs.hasAnyTarget: Boolean get() = notes.isNotEmpty() || transcripts.isNotEmpty() || audio.isNotEmpty()
 
+/** True when any output type goes to [target]. */
+fun DestinationPrefs.uses(target: OutputTarget): Boolean = target in notes || target in transcripts || target in audio
+
+/**
+ * Google Drive when anything goes there: the document's Drive folder then follows the library's
+ * title and folder (see [SyncEngine.enqueueMoved]).
+ */
+fun DestinationPrefs.driveMoveTargets(): Set<OutputTarget> =
+    if (uses(OutputTarget.DRIVE)) setOf(OutputTarget.DRIVE) else emptySet()
+
 /** Removes the folder destination everywhere (used when its permission was revoked). */
 fun DestinationPrefs.withoutFolder(): DestinationPrefs = copy(
     notes = notes - OutputTarget.FOLDER,
@@ -55,6 +65,15 @@ fun DestinationPrefs.withoutFolder(): DestinationPrefs = copy(
     audio = audio - OutputTarget.FOLDER,
     folderUri = null,
     folderLabel = null,
+)
+
+/** Removes Google Drive everywhere (disconnected). */
+fun DestinationPrefs.withoutDrive(): DestinationPrefs = copy(
+    notes = notes - OutputTarget.DRIVE,
+    transcripts = transcripts - OutputTarget.DRIVE,
+    audio = audio - OutputTarget.DRIVE,
+    driveAccount = null,
+    driveShareLink = false,
 )
 
 val NotesExportFormat.includesPdf: Boolean get() = this != NotesExportFormat.MARKDOWN
@@ -85,18 +104,25 @@ interface SyncSource {
 interface SyncStateStore {
     var lastSuccessAt: Long
     var lastError: String?
-    var vaultLockedUntil: Long
+    /** Id of the "Inkwell" folder in Google Drive (null until created or after disconnecting). */
+    var driveRootId: String?
+    /** The Drive folder id last shared with anyone who has the link (null = not shared). */
+    var driveSharedRootId: String?
     /**
-     * When the vault last refused the stored password (epoch ms; 0 = never). Vault uploads pause
-     * for [SyncEngine.CREDENTIALS_HOLD_MS] after that, or until the credentials change, so the
-     * app's own retries never trip the vault's failed-login lockout against the user.
+     * Where the document's files were last written inside the folder destination [folder] (its
+     * tree URI). Kept after the document is deleted (its copies stay), so no other document writes
+     * over them, and kept per folder, so choosing another folder and coming back (or choosing the
+     * folder again after its permission was lost) still knows whose copies are where.
      */
-    var vaultCredentialsRefusedAt: Long
-        get() = 0L
-        set(@Suppress("UNUSED_PARAMETER") value) {}
-    /** Where the document's files were last written inside the folder destination. */
-    fun folderLocation(docId: String): List<String>?
-    fun setFolderLocation(docId: String, segments: List<String>?)
+    fun folderLocation(folder: String, docId: String): List<String>?
+    fun setFolderLocation(folder: String, docId: String, segments: List<String>?)
+    /** Every stored location in [folder], by document id. */
+    fun folderLocations(folder: String): Map<String, List<String>> = emptyMap()
+    /** Id of the document's own folder in Google Drive. */
+    fun driveDocFolder(docId: String): String?
+    fun setDriveDocFolder(docId: String, folderId: String?)
+    /** Forgets every Drive id (another account, or Drive disconnected). */
+    fun clearDrive()
 }
 
 interface NetworkState {
@@ -107,11 +133,25 @@ interface NetworkState {
 class InMemorySyncState : SyncStateStore {
     override var lastSuccessAt: Long = 0
     override var lastError: String? = null
-    override var vaultLockedUntil: Long = 0
-    override var vaultCredentialsRefusedAt: Long = 0
-    private val locations = HashMap<String, List<String>>()
-    override fun folderLocation(docId: String): List<String>? = synchronized(locations) { locations[docId] }
-    override fun setFolderLocation(docId: String, segments: List<String>?) {
-        synchronized(locations) { if (segments == null) locations.remove(docId) else locations[docId] = segments }
+    override var driveRootId: String? = null
+    override var driveSharedRootId: String? = null
+    private val driveFolders = HashMap<String, String>()
+    /** Folder -> document id -> location. */
+    private val locations = HashMap<String, HashMap<String, List<String>>>()
+    override fun folderLocation(folder: String, docId: String): List<String>? = synchronized(locations) { locations[folder]?.get(docId) }
+    override fun setFolderLocation(folder: String, docId: String, segments: List<String>?) {
+        synchronized(locations) {
+            if (segments == null) locations[folder]?.remove(docId) else locations.getOrPut(folder) { HashMap() }[docId] = segments
+        }
+    }
+    override fun folderLocations(folder: String): Map<String, List<String>> = synchronized(locations) { HashMap(locations[folder].orEmpty()) }
+    override fun driveDocFolder(docId: String): String? = synchronized(driveFolders) { driveFolders[docId] }
+    override fun setDriveDocFolder(docId: String, folderId: String?) {
+        synchronized(driveFolders) { if (folderId == null) driveFolders.remove(docId) else driveFolders[docId] = folderId }
+    }
+    override fun clearDrive() {
+        driveRootId = null
+        driveSharedRootId = null
+        synchronized(driveFolders) { driveFolders.clear() }
     }
 }

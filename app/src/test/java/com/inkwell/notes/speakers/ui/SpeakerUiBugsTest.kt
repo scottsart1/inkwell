@@ -58,7 +58,7 @@ class SpeakerUiBugsTest {
     @Test
     fun aVoiceWhosePersonWasDeletedKeepsTheNameWrittenIntoTheTranscript() {
         // Deleting a person nulls recording_speakers.personId (foreign key) but the transcript,
-        // exports, search and the vault keep "Priya". The panel showed "Speaker 1" for the same
+        // exports, search and Google Drive keep "Priya". The panel showed "Speaker 1" for the same
         // blocks, so the screen and the export disagreed.
         val row = speaker("S1", personId = null, confirmed = false, speechMs = 10_000)
         assertEquals("Speaker 1", row.displayName)

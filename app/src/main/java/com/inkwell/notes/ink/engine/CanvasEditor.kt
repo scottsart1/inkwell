@@ -142,7 +142,8 @@ internal class CanvasEditor(private val e: InkEngine) {
         if (i < 0) return
         e.applyEdit(i, "Edit text") { c ->
             val old = c.texts.firstOrNull { it.id == ref.itemId } ?: return@applyEdit c
-            if (text.isBlank()) return@applyEdit ContentOps.remove(c, setOf(old.id))
+            // Emptying a box removes it; arrows attached to it keep their end where it was.
+            if (text.isBlank()) return@applyEdit SelectionClipboard.detachRemoved(c, ContentOps.remove(c, setOf(old.id)))
             val cfg = config ?: TextConfig(old.fontSizePt, old.color, old.bold, old.italic)
             val pageW = pageWidthOr(i, 0f)
             val maxWidth = if (pageW > 0f) max(old.width, pageW - old.x - 24f).coerceAtLeast(60f) else max(old.width, 520f)

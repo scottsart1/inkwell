@@ -41,15 +41,16 @@ object FolderNaming {
      * Folder chain (outermost first) + document title below [ROOT]. Library titles are unique, but
      * two titles can sanitise to the same segment ("Q&A: Lecture" and "Q&A_ Lecture"); when
      * sanitising changed the title and [docId] is known, a short id suffix keeps the directories
-     * apart so one document's copies never overwrite another's.
+     * apart so one document's copies never overwrite another's. [withId] adds the suffix anyway
+     * (the plain name holds another document's copies).
      */
-    fun documentDir(folderNames: List<String>, docTitle: String, docId: String? = null): List<String> =
-        listOf(ROOT) + folderNames.map { segment(it, fallback = "Folder") } + documentSegment(docTitle, docId)
+    fun documentDir(folderNames: List<String>, docTitle: String, docId: String? = null, withId: Boolean = false): List<String> =
+        listOf(ROOT) + folderNames.map { segment(it, fallback = "Folder") } + documentSegment(docTitle, docId, withId)
 
-    internal fun documentSegment(docTitle: String, docId: String?): String {
+    internal fun documentSegment(docTitle: String, docId: String?, withId: Boolean = false): String {
         val plain = segment(docTitle)
         val shortId = docId?.filter { it.isLetterOrDigit() }?.take(6).orEmpty()
-        if (shortId.isEmpty() || plain == docTitle) return plain
+        if (shortId.isEmpty() || (plain == docTitle && !withId)) return plain
         return segment(docTitle, maxLength = MAX_SEGMENT - shortId.length - 3) + " ($shortId)"
     }
 

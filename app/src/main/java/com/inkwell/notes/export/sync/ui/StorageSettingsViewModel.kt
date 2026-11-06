@@ -1,7 +1,11 @@
 package com.inkwell.notes.export.sync.ui
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -14,17 +18,18 @@ import com.inkwell.notes.core.model.AppSettings
 import com.inkwell.notes.core.model.DestinationPrefs
 import com.inkwell.notes.core.model.NotesExportFormat
 import com.inkwell.notes.core.model.OutputTarget
-import com.inkwell.notes.core.settings.SecretStore
 import com.inkwell.notes.export.SyncManagerImpl
 import com.inkwell.notes.export.SyncStatus
+import com.inkwell.notes.export.backup.AutoBackupStatus
+import com.inkwell.notes.export.backup.BackupPrefs
+import com.inkwell.notes.export.sync.DriveException
+import com.inkwell.notes.export.sync.PlayServicesDriveAuth
 import com.inkwell.notes.export.sync.SafFolderAccess
 import com.inkwell.notes.export.sync.SyncKind
-import com.inkwell.notes.export.sync.VaultUrl
 import com.inkwell.notes.export.sync.targetsFor
 import com.inkwell.notes.export.sync.withTargets
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -56,9 +61,12 @@ internal class StorageUiPrefs(context: Context) {
     }
 }
 
+/** What Google needs to know about this app (shown in the one-time Drive setup steps). */
+internal data class DriveSetupInfo(val packageName: String, val sha1: String?)
+
 /**
- * State and actions of "Storage, sync & backup". Never holds the vault password after it is
- * saved; [hasPassword] only says whether one exists.
+ * State and actions of "Storage, sync & backup". Google Drive access is held by Google Play
+ * services; this screen only starts the consent flow and keeps the connected account's email.
  */
 internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel() {
     private val context: Context get() = graph.context
@@ -71,31 +79,68 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val backup: StateFlow<BackupState> = BackupJobs.state
 
-    var hasPassword by mutableStateOf(false)
+    var driveCheck by mutableStateOf<CheckState>(CheckState.Idle)
         private set
-    var vaultCheck by mutableStateOf<CheckState>(CheckState.Idle)
+    /** Google's account/consent screen to show; the screen launches it and calls [onDriveConsent]. */
+    var driveConsent by mutableStateOf<PendingIntent?>(null)
         private set
+    /** True once Google said Inkwell isn't registered: the setup steps open by themselves. */
+    var driveNeedsSetup by mutableStateOf(false)
+        private set
+    val driveSetup: DriveSetupInfo by lazy { DriveSetupInfo(context.packageName, signingSha1(context)) }
+    /** The Inkwell folder's link while it is shared with anyone who has it; null otherwise. */
+    var driveSharedLink by mutableStateOf<String?>(null)
+        private set
+    /** Sharing by link is being switched on or off right now. */
+    var driveSharing by mutableStateOf(false)
+        private set
+    private var driveFor: SyncKind? = null
     var folderCheck by mutableStateOf<CheckState>(CheckState.Idle)
         private set
     var syncRequested by mutableStateOf(false)
         private set
     var autoBackup by mutableStateOf<AutoBackupPref?>(null)
         private set
+    /** How the automatic backups have gone (complete, or documents left out). */
+    var autoBackupStatus by mutableStateOf(AutoBackupStatus())
+        private set
     /** One-off problem to show (picker unavailable, permission refused...). */
     var notice by mutableStateOf<String?>(null)
 
-    private var passwordJob: Job? = null
-    private var pendingPassword: String? = null
-    private var urlJob: Job? = null
-    private var pendingUrl: String? = null
-
     init {
         viewModelScope.launch {
-            val (has, auto) = withContext(Dispatchers.IO) {
-                runCatching { graph.secrets.has(SecretStore.VAULT_PASSWORD) }.getOrDefault(false) to runCatching { uiPrefs.autoBackup() }.getOrNull()
+            autoBackup = withContext(Dispatchers.IO) { runCatching { uiPrefs.autoBackup() }.getOrNull() }
+            autoBackupStatus = withContext(Dispatchers.IO) { runCatching { BackupPrefs(context).status() }.getOrNull() } ?: AutoBackupStatus()
+        }
+        // The link appears once the folder exists and is shared (after connecting, a copy, a test).
+        viewModelScope.launch { status.collect { refreshDriveLink() } }
+    }
+
+    private suspend fun refreshDriveLink() {
+        driveSharedLink = withContext(Dispatchers.IO) {
+            impl?.takeIf { it.driveLinkShared() }?.driveFolderLink()
+        }
+    }
+
+    /**
+     * Opt-in: lets anyone who has the Inkwell folder's link open it without signing in to Google,
+     * or withdraws that. Applied to Drive right away.
+     */
+    fun setDriveShareLink(on: Boolean) {
+        if (driveSharing) return
+        driveSharing = true
+        // App scope: leaving the screen must not leave the folder shared when the user said no.
+        graph.appScope.launch {
+            try {
+                graph.settings.update { it.copy(destinations = it.destinations.copy(driveShareLink = on)) }
+                val result = impl?.applyDriveSharing()
+                withContext(Dispatchers.Main) {
+                    result?.exceptionOrNull()?.let { driveCheck = CheckState.Failed(it.message ?: context.getString(R.string.sync_drive_unavailable)) }
+                }
+                refreshDriveLink()
+            } finally {
+                withContext(Dispatchers.Main) { driveSharing = false }
             }
-            hasPassword = has
-            autoBackup = auto
         }
     }
 
@@ -165,97 +210,131 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
         }
     }
 
-    // ------------------------------------------------------------------ vault
+    // ------------------------------------------------------------------ Google Drive
 
-    /** Saves a valid link shortly after typing stops; an empty field clears it. */
-    fun onUrlChanged(text: String) {
-        urlJob?.cancel()
-        vaultCheck = CheckState.Idle
-        pendingUrl = text
-        urlJob = viewModelScope.launch {
-            delay(URL_SAVE_DELAY_MS)
-            saveUrl(text)
+    /**
+     * Asks Google for Drive access; [enableFor] switches Drive on for that output once connected.
+     * With an account already connected this is "Reconnect": Google asks for that account again
+     * (access was withdrawn, the password changed, or a Testing-mode grant expired).
+     */
+    fun connectDrive(enableFor: SyncKind?) {
+        if (driveCheck == CheckState.Running) return
+        driveFor = enableFor
+        driveCheck = CheckState.Running
+        val account = settings.value.destinations.driveAccount
+        viewModelScope.launch {
+            try {
+                when (val begin = PlayServicesDriveAuth.begin(context, account)) {
+                    is PlayServicesDriveAuth.Begin.NeedsConsent -> driveConsent = begin.intent
+                    is PlayServicesDriveAuth.Begin.Granted -> finishConnect(begin.token)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: DriveException) {
+                driveFailed(e)
+            }
         }
     }
 
-    fun commitUrl(text: String) {
-        urlJob?.cancel()
-        viewModelScope.launch { saveUrl(text) }
+    /**
+     * Hands the pending consent screen to the UI exactly once (a rotation must not show it twice);
+     * the result comes back through [onDriveConsent].
+     */
+    fun takeDriveConsent(): PendingIntent? = driveConsent.also { if (it != null) driveConsent = null }
+
+    /** The consent screen could not be shown at all. */
+    fun onDriveConsentUnavailable() {
+        driveConsent = null
+        driveFor = null
+        driveCheck = CheckState.Failed(context.getString(R.string.sync_drive_no_consent))
     }
 
-    private suspend fun saveUrl(text: String) {
-        pendingUrl = null
-        val value = when (val p = VaultUrl.parse(text)) {
-            is VaultUrl.Parsed.Valid -> p.endpoint.baseUrl
-            VaultUrl.Parsed.Empty -> ""
-            is VaultUrl.Parsed.Invalid -> return
-        }
-        if (value != settings.value.destinations.vaultUrl) {
-            graph.settings.update { it.copy(destinations = it.destinations.copy(vaultUrl = value)) }
-        }
-    }
-
-    /** Saves the password to SecretStore shortly after typing stops. An empty field keeps the saved one. */
-    fun onPasswordChanged(text: String) {
-        passwordJob?.cancel()
-        vaultCheck = CheckState.Idle
-        if (text.isEmpty()) {
-            pendingPassword = null
+    /**
+     * Google's account/consent screen closed with [resultCode] and [data]. [enableFor] is the
+     * output the user tapped, kept by the screen (this view model may be new after process death).
+     */
+    fun onDriveConsent(resultCode: Int, data: Intent?, enableFor: SyncKind? = null) {
+        driveConsent = null
+        if (enableFor != null) driveFor = enableFor
+        if (data == null) {
+            driveFor = null
+            driveCheck = CheckState.Failed(context.getString(R.string.sync_drive_cancelled))
             return
         }
-        pendingPassword = text
-        passwordJob = viewModelScope.launch {
-            delay(PASSWORD_SAVE_DELAY_MS)
-            flushPassword()
-        }
-    }
-
-    fun commitPassword() {
-        passwordJob?.cancel()
-        viewModelScope.launch { flushPassword() }
-    }
-
-    private suspend fun flushPassword() {
-        val text = pendingPassword ?: return
-        pendingPassword = null
-        val saved = withContext(Dispatchers.IO) {
-            runCatching { graph.secrets.put(SecretStore.VAULT_PASSWORD, text) }.isSuccess
-        }
-        if (saved) {
-            hasPassword = true
-            impl?.onVaultCredentialsChanged()
-        } else {
-            notice = context.getString(R.string.sync_password_store_failed)
-        }
-    }
-
-    fun forgetPassword() {
-        passwordJob?.cancel()
-        pendingPassword = null
+        driveCheck = CheckState.Running
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    graph.secrets.remove(SecretStore.VAULT_PASSWORD)
-                    graph.secrets.remove(SecretStore.VAULT_SESSION)
-                }
+            try {
+                finishConnect(PlayServicesDriveAuth.finish(context, data))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: DriveException) {
+                driveFailed(e)
             }
-            hasPassword = false
-            vaultCheck = CheckState.Idle
         }
     }
 
-    /** Test connection with what is in the fields (an empty password field uses the saved one). */
-    fun testVault(urlText: String, passwordText: String) {
-        if (vaultCheck == CheckState.Running) return
-        vaultCheck = CheckState.Running
-        urlJob?.cancel()
-        passwordJob?.cancel()
-        viewModelScope.launch {
-            saveUrl(urlText)
-            flushPassword()
-            val r = graph.sync.testVault(urlText, passwordText)
-            vaultCheck = r.fold({ CheckState.Ok(it) }, { CheckState.Failed(it.message ?: "The connection test failed.") })
+    private suspend fun finishConnect(token: String) {
+        val manager = impl ?: run {
+            driveFailed(DriveException.NotConnected())
+            return
         }
+        val result = manager.connectDrive(token, driveFor)
+        driveFor = null
+        refreshDriveLink()
+        driveCheck = result.fold(
+            onSuccess = { email ->
+                driveNeedsSetup = false
+                CheckState.Ok(context.getString(R.string.sync_drive_connected_as, email))
+            },
+            onFailure = { e ->
+                if (e.cause is DriveException.NotSetUp) driveNeedsSetup = true
+                CheckState.Failed(e.message ?: context.getString(R.string.sync_drive_unavailable))
+            },
+        )
+    }
+
+    private fun driveFailed(e: DriveException) {
+        driveFor = null
+        if (e is DriveException.NotSetUp) driveNeedsSetup = true
+        driveCheck = CheckState.Failed(
+            if (e is DriveException.Cancelled) context.getString(R.string.sync_drive_cancelled)
+            else e.message ?: context.getString(R.string.sync_drive_unavailable),
+        )
+    }
+
+    fun testDrive() {
+        if (driveCheck == CheckState.Running) return
+        driveCheck = CheckState.Running
+        viewModelScope.launch {
+            val r = graph.sync.testDrive()
+            refreshDriveLink()
+            val cause = r.exceptionOrNull()?.cause
+            if (cause is DriveException.NeedsSignIn || cause is DriveException.Unauthorized) {
+                // Google wants the user to approve again: show its screen right away.
+                driveCheck = CheckState.Idle
+                connectDrive(enableFor = null)
+                return@launch
+            }
+            driveCheck = r.fold({ CheckState.Ok(it) }, { e ->
+                if (e.cause is DriveException.NotSetUp) driveNeedsSetup = true
+                CheckState.Failed(e.message ?: context.getString(R.string.sync_drive_unavailable))
+            })
+        }
+    }
+
+    /** The user closed the setup steps that opened by themselves. */
+    fun hideDriveSetup() {
+        driveNeedsSetup = false
+    }
+
+    /** Where "Open Drive in browser" goes: the Inkwell folder once it exists. */
+    fun driveUrl(): String = impl?.driveFolderUrl() ?: "https://drive.google.com/drive/my-drive"
+
+    /** Stops copying to Drive and withdraws access; what is already in Drive stays. */
+    fun disconnectDrive() {
+        driveCheck = CheckState.Idle
+        // App scope: leaving the screen must not leave Drive half disconnected.
+        graph.appScope.launch { impl?.disconnectDrive() }
     }
 
     // ------------------------------------------------------------------ sync
@@ -297,6 +376,8 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
             val pref = AutoBackupPref(uri.toString(), label)
             withContext(Dispatchers.IO) { uiPrefs.setAutoBackup(pref) }
             autoBackup = pref
+            // Scheduling a new folder cleared the old folder's status (AutoBackup.schedule).
+            autoBackupStatus = withContext(Dispatchers.IO) { runCatching { BackupPrefs(context).status() }.getOrNull() } ?: AutoBackupStatus()
             releaseIfUnused(previous, keep = uri.toString())
         }
     }
@@ -309,27 +390,26 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
                 uiPrefs.setAutoBackup(null)
             }
             autoBackup = null
+            autoBackupStatus = AutoBackupStatus()
             releaseIfUnused(previous, keep = null)
         }
     }
 
-    override fun onCleared() {
-        // Keep what was typed: finish pending saves outside the closing screen.
-        pendingUrl?.let { text -> graph.appScope.launch { saveUrl(text) } }
-        val password = pendingPassword
-        pendingPassword = null
-        if (password != null) {
-            graph.appScope.launch(Dispatchers.IO) {
-                runCatching { graph.secrets.put(SecretStore.VAULT_PASSWORD, password) }
-                impl?.onVaultCredentialsChanged()
-            }
-        }
-        super.onCleared()
-    }
-
     private companion object {
-        const val URL_SAVE_DELAY_MS = 900L
-        const val PASSWORD_SAVE_DELAY_MS = 700L
         const val AUTO_BACKUP_DAYS = 1
+
+        /** SHA-1 of the certificate this app is signed with, as Google Cloud asks for it ("AB:CD:..."). */
+        fun signingSha1(context: Context): String? = runCatching {
+            val pm = context.packageManager
+            val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val info = pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+                info.signingInfo?.let { si -> if (si.hasMultipleSigners()) si.apkContentsSigners else si.signingCertificateHistory }
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES).signatures
+            }
+            val cert = signatures?.lastOrNull() ?: return@runCatching null
+            java.security.MessageDigest.getInstance("SHA-1").digest(cert.toByteArray()).joinToString(":") { "%02X".format(it) }
+        }.getOrNull()
     }
 }

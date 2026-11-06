@@ -35,11 +35,10 @@ so it is unit-testable without Android.
 | `speakers` | Who spoke when, people, voiceprints, naming after a meeting | `SpeakerContracts.kt` |
 | `ocr` + `search` | ML Kit OCR + handwriting recognition, FTS index, indexing pipeline, search screen | `ocr/OcrContracts.kt`, `search/SearchScreen.kt` |
 | `pdf` | Import, render, text extraction, merge/split/extract, scanning | `PdfService.kt` |
-| `export` | Export formats, thumbnails, backup, sync to folder / notes vault, storage settings UI | `ExportContracts.kt`, `ui/ExportUi.kt` |
+| `export` | Export formats, thumbnails, backup, sync to a folder / Google Drive, storage settings UI | `ExportContracts.kt`, `ui/ExportUi.kt` |
 | `whiteboard`, `typed` | Infinite canvas screen, typed document editor | `WhiteboardScreen.kt`, `TypedDocumentScreen.kt` |
 | `settings` | Settings screens, app lock | `SettingsScreen.kt`, `AppLock.kt` |
 | `ui/theme` | Design tokens (`Inkwell.colors`, `Dimens`, Figtree type) | `Theme.kt` |
-| `web/notes-vault` | Cloudflare Worker for yourpitbox.com/notes | `docs/VAULT_API.md` |
 
 Rules for contracts:
 
@@ -65,8 +64,9 @@ Rules for contracts:
 - AI output never silently overwrites notes; insertion is always an explicit user action.
 - Long work (OCR, AI, export, sync, transcription) runs off the main thread / in WorkManager
   and never blocks writing.
-- API keys and the vault password live only in `SecretStore`; never log them, never put them
-  in settings JSON, exports, or shared files.
+- API keys live only in `SecretStore`; never log them, never put them in settings JSON,
+  exports, or shared files. Google Drive access tokens come from Google Play services on demand
+  and are never stored by Inkwell (see `docs/GOOGLE_DRIVE.md`).
 - Voiceprints (speaker embeddings, reference clips) are biometric: encrypted, under
   `noBackupFilesDir`, never in the database, backups, exports or sync. Only names travel.
 
@@ -89,11 +89,20 @@ Runs after a recording, never live. `SpeakerPrefs.engine` picks the engine:
 
 Storage: `recording_speakers` (one row per voice and recording, linked to `people`),
 `speaker_turns` (who spoke when) and `transcript_segments.speakerLabel` + `speaker` (display
-name, the field exports, search, the vault and AI prompts read). `TurnAligner` labels transcript
+name, the field exports, search, Google Drive and AI prompts read). `TurnAligner` labels transcript
 blocks by time overlap and splits long blocks at sentence boundaries. Naming, confirming,
 moving a block, merging voices and renaming people all go through `SpeakerService`, which
 rewrites names, re-indexes search and hands the transcript to sync. Voiceprints live in
 `speakers/voices/VoiceprintStore` (AES-256-GCM, Keystore key `inkwell.voices.v1`).
+
+## Google Drive
+
+`OutputTarget.DRIVE` copies notes (PDF/Markdown), transcripts (converted to Google Docs) and
+audio into `My Drive / Inkwell / <folders> / <title>/`, so they can be read on any computer.
+Access is the `drive.file` scope through Google Play services (`PlayServicesDriveAuth`): no token
+or password is stored. `DriveClient` speaks Drive v3 over OkHttp; `DriveLayout` finds Inkwell's
+folders and files by private app properties, so renames and moves follow the document. The
+one-time Google Cloud registration is described in `docs/GOOGLE_DRIVE.md`.
 
 ## Threading
 

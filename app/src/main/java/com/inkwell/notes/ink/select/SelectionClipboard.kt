@@ -48,6 +48,31 @@ object SelectionClipboard {
         )
     }
 
+    /**
+     * [after] (an edit of [before] that removed items) with every connector end whose item the
+     * edit removed frozen where that item's edge was in [before], as deleting a selection does.
+     * Otherwise an arrow whose box was erased or emptied jumps to its stale fallback point.
+     * Returns [after] itself when no connector lost an item.
+     */
+    fun detachRemoved(before: PageContent, after: PageContent): PageContent {
+        if (after === before || after.connectors.none { it.fromItemId != null || it.toItemId != null }) return after
+        val present = HashSet<String>()
+        for (item in ContentOps.allItems(after)) present += Items.id(item)
+        var existed: HashSet<String>? = null
+        fun removed(id: String?): Boolean {
+            if (id == null || id in present) return false
+            val ids = existed ?: ContentOps.allItems(before).mapTo(HashSet()) { Items.id(it) }.also { existed = it }
+            return id in ids
+        }
+        var detached: HashMap<String, Any>? = null
+        for (c in after.connectors) {
+            if (!removed(c.fromItemId) && !removed(c.toItemId)) continue
+            val map = detached ?: HashMap<String, Any>().also { detached = it }
+            map[c.id] = detachOutside(c, before, present)
+        }
+        return detached?.let { ContentOps.replace(after, it) } ?: after
+    }
+
     /** Freezes the ends of [c] attached to items not in [keep] at their live positions in [page]. */
     fun detachOutside(c: ConnectorItem, page: PageContent, keep: Set<String>): ConnectorItem {
         val fromOut = c.fromItemId != null && c.fromItemId !in keep

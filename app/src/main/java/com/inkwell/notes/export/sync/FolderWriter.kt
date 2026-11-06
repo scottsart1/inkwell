@@ -109,10 +109,12 @@ object FolderWriter {
      * Moves the files this app owns from [oldDir] to [newDir] (rename of a document or a move to
      * another folder): renames the directory in place when only its name changed, otherwise
      * leaves it to the caller to rewrite the files and deletes the old ones. Returns true when the
-     * old directory now *is* the new one.
+     * old directory now *is* the new one. A directory with sub-directories is never renamed: a
+     * library folder of the same name shares it, and its documents' copies must stay.
      */
     fun renameDirInPlace(oldDir: FolderNode, newName: String, parent: FolderNode): Boolean {
         if (parent.children().any { it.name == newName }) return false
+        if (oldDir.children().any { it.isDirectory }) return false
         return oldDir.renameTo(newName) && oldDir.name == newName
     }
 

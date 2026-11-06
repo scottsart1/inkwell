@@ -67,7 +67,7 @@ import java.util.concurrent.ConcurrentHashMap
  * recognition of known people by voiceprint, naming, corrections, and the speaker labels and
  * names written into transcripts, search and sync.
  *
- * Only names live in Room and travel (transcripts, exports, vault). Voiceprints, per-recording
+ * Only names live in Room and travel (transcripts, exports, Google Drive). Voiceprints, per-recording
  * centroids and reference clips are encrypted on this device in [VoiceprintStore]. With
  * SpeakerPrefs.rememberVoices off nothing about a voice is ever written.
  *
@@ -193,9 +193,14 @@ class SpeakerServiceImpl(private val graph: AppGraph) : SpeakerService {
 
     override suspend fun renamePerson(personId: String, name: String) {
         val clean = requireNotNull(SpeakerNames.clean(name)) { "A name is needed" }
-        val p = dao.person(personId) ?: return
-        if (p.name == clean) return
-        dao.upsertPerson(p.copy(name = clean, updatedAt = System.currentTimeMillis()))
+        peopleLock.withLock {
+            val p = dao.person(personId) ?: return
+            if (p.name == clean) return
+            // Names are how typed names find people (personFor): two people must not share one.
+            val other = dao.personNamed(clean)
+            require(other == null || other.id == personId) { "Someone is already called that" }
+            dao.upsertPerson(p.copy(name = clean, updatedAt = System.currentTimeMillis()))
+        }
         rewriteNames(dao.speakersOf(personId).map { it.recordingId }.toSet())
     }
 
@@ -257,7 +262,7 @@ class SpeakerServiceImpl(private val graph: AppGraph) : SpeakerService {
     override suspend fun deletePerson(personId: String) {
         val affected = dao.speakersOf(personId).mapTo(LinkedHashSet()) { it.recordingId }
         // recording_speakers.personId is set to null by the foreign key; their voices read
-        // "Speaker N" again everywhere (transcript, search, exports, vault), not only in the panel.
+        // "Speaker N" again everywhere (transcript, search, exports, Google Drive), not only in the panel.
         // The row goes first: enrollment re-checks it under the voice lock, so a job finishing
         // concurrently cannot write a voiceprint for this person after the files are deleted.
         dao.deletePerson(personId)
@@ -873,7 +878,7 @@ class SpeakerServiceImpl(private val graph: AppGraph) : SpeakerService {
 
     /**
      * Voice files are best effort: a full disk or a Keystore hiccup must never leave the speaker
-     * rows, transcript, search index, exports and vault out of step. Logs carry no voice data.
+     * rows, transcript, search index, exports and Google Drive copies out of step. Logs carry no voice data.
      */
     private suspend inline fun voiceData(what: String, block: () -> Unit) {
         try {

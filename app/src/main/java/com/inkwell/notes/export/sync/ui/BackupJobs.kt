@@ -33,16 +33,26 @@ internal object BackupJobs {
         val report = graph.backup.backupTo(target)
         val size = Formatter.formatShortFileSize(graph.context, report.bytes)
         val docs = if (report.documents == 1) "1 document" else "${report.documents} documents"
-        "Backed up $docs ($size)."
+        "Backed up $docs ($size)." + skippedNote(report.skipped, "backed up")
     }
 
     fun restore(graph: AppGraph, source: Uri) = launch(graph, restore = true) {
-        val count = graph.backup.restoreFrom(source)
-        when (count) {
-            0 -> "The backup had no documents to restore."
-            1 -> "Restored 1 document."
-            else -> "Restored $count documents."
-        }
+        val report = graph.backup.restoreWithReport(source)
+        restoreMessage(report.documents, report.skipped)
+    }
+
+    internal fun restoreMessage(restored: Int, skipped: Int): String = when {
+        restored == 0 && skipped == 0 -> "The backup had no documents to restore."
+        restored == 0 -> "None of the documents in the backup could be restored."
+        restored == 1 -> "Restored 1 document." + skippedNote(skipped, "restored")
+        else -> "Restored $restored documents." + skippedNote(skipped, "restored")
+    }
+
+    /** " 2 documents could not be restored." for documents left out; empty when none were. */
+    internal fun skippedNote(skipped: Int, verb: String): String = when {
+        skipped <= 0 -> ""
+        skipped == 1 -> " 1 document could not be $verb."
+        else -> " $skipped documents could not be $verb."
     }
 
     fun dismiss() {

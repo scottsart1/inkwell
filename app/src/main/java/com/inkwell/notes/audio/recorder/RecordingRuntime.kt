@@ -6,6 +6,7 @@ import com.inkwell.notes.core.model.AudioAnchor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * Process-level recording state shared by the controller, the foreground service, the
@@ -18,6 +19,20 @@ internal object RecordingRuntime {
 
     /** The recording in progress, or null. */
     @Volatile var session: RecordingSession? = null
+
+    private val errorReports = MutableStateFlow(0)
+
+    /**
+     * Bumped by every [reportError]. [state] keeps equal values, so the same failure twice in a
+     * row (Record tapped again with storage still full) only shows up here.
+     */
+    val errorReport: StateFlow<Int> = errorReports.asStateFlow()
+
+    /** Publishes [message] as the recording error; every call is a new report for the overlay. */
+    fun reportError(message: String) {
+        mutableState.value = RecordingState.Error(message)
+        errorReports.update { it + 1 }
+    }
 
     @Volatile private var engine: RecordingEngine? = null
 

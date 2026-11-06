@@ -85,7 +85,7 @@ class MarkdownExportTest {
             | P\|L | Profit |
             | ROI |  |
 
-            ![Demand curve](assets/curve.png)
+            *\[Image: Demand curve\]*
 
             ---
         """.trimIndent() + "\n"

@@ -14,8 +14,8 @@ android {
         applicationId = "com.inkwell.notes"
         minSdk = 29
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.1.2"
+        versionCode = 7
+        versionName = "1.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
         ndk {
@@ -147,6 +147,8 @@ dependencies {
     implementation(libs.mlkit.digital.ink)
     implementation(libs.mlkit.document.scanner)
     implementation(libs.sherpa.onnx)
+    // Google Drive sync: Play services hands out drive.file access tokens (no password or token is stored by Inkwell).
+    implementation(libs.play.services.auth)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

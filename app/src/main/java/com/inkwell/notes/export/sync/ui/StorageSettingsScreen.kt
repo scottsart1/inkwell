@@ -3,6 +3,7 @@ package com.inkwell.notes.export.sync.ui
 import android.content.ActivityNotFoundException
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -62,6 +65,8 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
     val prefs = settings.destinations
 
     var folderFor by rememberSaveable { mutableStateOf<String?>(null) }
+    // The output whose Drive chip started the connection: survives process death during consent.
+    var driveFor by rememberSaveable { mutableStateOf<String?>(null) }
     var restoreUri by rememberSaveable { mutableStateOf<String?>(null) }
     val pickerMissing = stringResource(R.string.sync_no_picker)
 
@@ -79,6 +84,24 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
     val autoBackupPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) vm.enableAutoBackup(uri)
     }
+    val driveConsent = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val kind = driveFor?.let { runCatching { SyncKind.valueOf(it) }.getOrNull() }
+        driveFor = null
+        vm.onDriveConsent(result.resultCode, result.data, kind)
+    }
+    // Google's account and consent screen, when the view model asks for it.
+    val consent = vm.driveConsent
+    LaunchedEffect(consent) {
+        val pending = if (consent != null) vm.takeDriveConsent() else null
+        if (pending != null) {
+            try {
+                driveConsent.launch(IntentSenderRequest.Builder(pending.intentSender).build())
+            } catch (e: Exception) {
+                vm.onDriveConsentUnavailable()
+            }
+        }
+    }
+    val uriHandler = LocalUriHandler.current
 
     fun launchTree(launcher: androidx.activity.result.ActivityResultLauncher<Uri?>, initial: String?) {
         try {
@@ -102,6 +125,9 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
                         if (target == OutputTarget.FOLDER && on && prefs.folderUri == null) {
                             folderFor = kind.name
                             launchTree(folderPicker, null)
+                        } else if (target == OutputTarget.DRIVE && on && prefs.driveAccount == null) {
+                            driveFor = kind.name
+                            vm.connectDrive(enableFor = kind)
                         } else {
                             vm.setTarget(kind, target, on)
                         }
@@ -114,17 +140,36 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
                     onChoose = { folderFor = null; launchTree(folderPicker, prefs.folderUri) },
                     onTest = vm::testFolder,
                 )
-                VaultCard(
+                DriveCard(
                     prefs = prefs,
-                    hasPassword = vm.hasPassword,
-                    check = vm.vaultCheck,
-                    onUrlChanged = vm::onUrlChanged,
-                    onUrlCommit = vm::commitUrl,
-                    onPasswordChanged = vm::onPasswordChanged,
-                    onPasswordCommit = vm::commitPassword,
-                    onForgetPassword = vm::forgetPassword,
-                    onTest = vm::testVault,
-                    onBrowserError = { vm.notice = context.getString(R.string.sync_vault_browser_error) },
+                    check = vm.driveCheck,
+                    setup = vm.driveSetup,
+                    setupOpen = vm.driveNeedsSetup,
+                    onConnect = { driveFor = null; vm.connectDrive(enableFor = null) },
+                    onHideSetup = vm::hideDriveSetup,
+                    sharedLink = vm.driveSharedLink,
+                    sharing = vm.driveSharing,
+                    onShareLink = vm::setDriveShareLink,
+                    onSendLink = { link ->
+                        val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+                            .setType("text/plain")
+                            .putExtra(android.content.Intent.EXTRA_TEXT, link)
+                        try {
+                            context.startActivity(android.content.Intent.createChooser(send, null))
+                        } catch (e: ActivityNotFoundException) {
+                            vm.notice = pickerMissing
+                        }
+                    },
+                    onTest = vm::testDrive,
+                    onDisconnect = vm::disconnectDrive,
+                    onOpenDrive = {
+                        try {
+                            uriHandler.openUri(vm.driveUrl())
+                        } catch (e: Exception) {
+                            vm.notice = context.getString(R.string.sync_drive_browser_error)
+                        }
+                    },
+                    onCopied = { vm.notice = null },
                 )
                 SyncCard(
                     prefs = prefs,
@@ -149,6 +194,7 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
                     onAutoBackup = { on -> if (on) launchTree(autoBackupPicker, null) else vm.disableAutoBackup() },
                     onChangeAutoFolder = { launchTree(autoBackupPicker, vm.autoBackup?.uri) },
                     onDismissResult = vm::dismissBackupResult,
+                    autoStatus = vm.autoBackupStatus,
                 )
             }
         }

@@ -55,7 +55,16 @@ internal class SegmentRecorder(
     /** Starts writing segment [index]. Throws when the microphone cannot be opened. */
     fun start(index: Int) {
         currentIndex = index
-        recorder = create(fileFor(index)).also { it.start() }
+        val mr = create(fileFor(index))
+        try {
+            mr.start()
+        } catch (t: Throwable) {
+            // Not ours yet: free the prepared recorder now rather than at some GC.
+            runCatching { mr.reset() }
+            runCatching { mr.release() }
+            throw t
+        }
+        recorder = mr
     }
 
     fun pause() {
@@ -71,6 +80,13 @@ internal class SegmentRecorder(
         recorder?.maxAmplitude ?: 0
     } catch (_: RuntimeException) {
         0
+    }
+
+    /** Whether the system is silencing this recorder's own capture (another app took the microphone). */
+    fun isSilenced(): Boolean = try {
+        recorder?.activeRecordingConfiguration?.isClientSilenced == true
+    } catch (_: RuntimeException) {
+        false
     }
 
     /** Closes the current segment and continues in a new recorder (brief gap). */

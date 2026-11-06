@@ -13,7 +13,7 @@ internal object DockMemory {
     /** Vertical centre as a fraction of the container height. */
     var centerFraction: Float = 0.5f
         private set
-    /** Identity of the last error the user dismissed or saw time out. */
+    /** The last error report (RecordingRuntime.errorReport) the user dismissed or saw time out. */
     var dismissedError: Any? = null
     /** Notification permission was already requested in this process. */
     var askedForNotifications: Boolean = false

@@ -62,6 +62,17 @@ class EngineRobustnessTest {
         assertTrue(h.usage.rows.isEmpty())
     }
 
+    /** A redirect would replay x-api-key and the prompt to another host: it is reported, never followed. */
+    @Test fun redirectsAreNotFollowed() {
+        h.server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", h.server.url("/elsewhere/v1/messages").toString()))
+        val events = h.events(request(ModelRef(AiProviderId.ANTHROPIC, "claude-opus-5-5")))
+        val failed = events.last() as EngineEvent.Failed
+        assertEquals(AiFailure.Kind.CONFIG, failed.failure.kind)
+        assertFalse(failed.failure.retryable)
+        assertTrue(failed.failure.message, failed.failure.message.contains("307"))
+        assertEquals("the redirect target was not requested", 1, h.server.requestCount)
+    }
+
     /** Saving a key strips the invisible characters and whitespace that copying adds, so the stored key is usable. */
     @Test fun savedKeysAreCleanedOfInvisibleCharactersAndWhitespace() {
         assertEquals("sk-ant-abc123DEF", AiServiceImpl.sanitizeKey(" sk-ant-abc​123­DEF⁠\n"))

@@ -23,9 +23,11 @@ import com.inkwell.notes.core.model.ShapeKind
 import com.inkwell.notes.core.model.LibraryFilter
 import com.inkwell.notes.core.model.TextSource
 import com.inkwell.notes.ink.render.PageRenderer
+import com.inkwell.notes.ink.render.RenderOrder
 import com.inkwell.notes.whiteboard.kit.DocAssets
 import com.inkwell.notes.whiteboard.kit.FileSharing
 import com.inkwell.notes.whiteboard.kit.UiMessage
+import com.inkwell.notes.whiteboard.logic.BoardAnchors
 import com.inkwell.notes.whiteboard.logic.BoardGeometry
 import com.inkwell.notes.whiteboard.logic.Box
 import com.inkwell.notes.whiteboard.logic.CropMath
@@ -35,6 +37,7 @@ import com.inkwell.notes.whiteboard.logic.PasteSource
 import com.inkwell.notes.whiteboard.logic.RecordLogic
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -112,8 +115,12 @@ class BoardOperations(private val c: WhiteboardController) {
         }
     }
 
-    /** Renders all content into a bitmap at most [maxW] x [maxH] pixels. CPU only; call on Default. */
-    fun renderOverview(content: PageContent, maxW: Int, maxH: Int): MinimapImage? {
+    /**
+     * Renders all content into a bitmap at most [maxW] x [maxH] pixels. CPU only; call on Default.
+     * Stops early (returning null) once [isActive] turns false, so a superseded render of a large
+     * board does not keep running.
+     */
+    fun renderOverview(content: PageContent, maxW: Int, maxH: Int, isActive: () -> Boolean = { true }): MinimapImage? {
         val b = BoardGeometry.contentBounds(content) ?: return null
         val bw = max(b.width, 1f)
         val bh = max(b.height, 1f)
@@ -125,7 +132,18 @@ class BoardOperations(private val c: WhiteboardController) {
             val canvas = Canvas(bmp)
             canvas.scale(s, s)
             canvas.translate(-b.left, -b.top)
-            PageRenderer.drawContent(canvas, content, { id -> smallImages[id] })
+            // PageRenderer.drawContent in batches, checking for cancellation between them.
+            val ordered = RenderOrder.order(content)
+            var i = 0
+            while (i < ordered.size) {
+                if (!isActive()) {
+                    bmp.recycle()
+                    return null
+                }
+                val end = min(i + OVERVIEW_BATCH, ordered.size)
+                PageRenderer.drawItems(canvas, content, ordered.subList(i, end), { id -> smallImages[id] }, null, null)
+                i = end
+            }
             MinimapImage(bmp.asImageBitmap(), Box(b.left, b.top, b.left + bw, b.top + bh))
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
@@ -183,7 +201,8 @@ class BoardOperations(private val c: WhiteboardController) {
         val images = HashMap<String, Bitmap?>()
         for (im in content.images) {
             if (im.assetId in images) continue
-            if (!Box(im.x, im.y, im.x + im.width, im.y + im.height).intersects(region)) continue
+            // A rotated image reaches past its unrotated box.
+            if (!BoardAnchors.rotated(Box(im.x, im.y, im.x + im.width, im.y + im.height), im.rotation).intersects(region)) continue
             val need = (max(im.width, im.height) * scale).roundToInt().coerceIn(64, 4096)
             images[im.assetId] = DocAssets.decodeAsset(graph, docId, im.assetId, maxSide = need)
         }
@@ -277,28 +296,32 @@ class BoardOperations(private val c: WhiteboardController) {
         }
         c.busy = R.string.cd_working
         return try {
-            val target = notebook ?: graph.library.createDocument(DocKind.NOTEBOOK)
-            val page = if (notebook == null) {
-                graph.library.getPages(target.id).minByOrNull { it.index } ?: graph.library.addPage(target.id)
-            } else {
-                graph.library.addPage(target.id)
+            // Not cancellable (e.g. by closing the dialog): once the notebook or page exists,
+            // stopping before the save would leave it empty.
+            withContext(NonCancellable) {
+                val target = notebook ?: graph.library.createDocument(DocKind.NOTEBOOK)
+                val page = if (notebook == null) {
+                    graph.library.getPages(target.id).minByOrNull { it.index } ?: graph.library.addPage(target.id)
+                } else {
+                    graph.library.addPage(target.id)
+                }
+                val w = if (page.isInfinite) PageSizePreset.A4.widthPt else page.widthPt
+                val h = if (page.isInfinite) PageSizePreset.A4.heightPt else page.heightPt
+                val margin = min(48f, min(w, h) * 0.08f)
+                val fitted = withContext(Dispatchers.Default) {
+                    // The notebook has none of this board's recordings: anchors stay behind.
+                    val portable = FragmentOps.withoutAudio(FragmentOps.withFreshIds(selection.content))
+                    FragmentOps.fitInto(FragmentOps.compactZ(portable), Box(margin, margin, w - margin, h - margin))
+                }
+                DocAssets.copyAssets(graph, docId, target.id, FragmentOps.assetIds(fitted))
+                graph.pageStore.save(target.id, page.id, fitted)
+                runCatching { graph.library.pageContentChanged(target.id, page.id) }
+                runCatching { graph.indexing.pageChanged(target.id, page.id) }
+                runCatching { graph.sync.onDocumentChanged(target.id) }
+                runCatching { graph.thumbnails.refresh(target.id) }
+                val fresh = graph.library.getDocument(target.id) ?: target
+                fresh to page
             }
-            val w = if (page.isInfinite) PageSizePreset.A4.widthPt else page.widthPt
-            val h = if (page.isInfinite) PageSizePreset.A4.heightPt else page.heightPt
-            val margin = min(48f, min(w, h) * 0.08f)
-            val fitted = withContext(Dispatchers.Default) {
-                // The notebook has none of this board's recordings: anchors stay behind.
-                val portable = FragmentOps.withoutAudio(FragmentOps.withFreshIds(selection.content))
-                FragmentOps.fitInto(FragmentOps.compactZ(portable), Box(margin, margin, w - margin, h - margin))
-            }
-            DocAssets.copyAssets(graph, docId, target.id, FragmentOps.assetIds(fitted))
-            graph.pageStore.save(target.id, page.id, fitted)
-            runCatching { graph.library.pageContentChanged(target.id, page.id) }
-            runCatching { graph.indexing.pageChanged(target.id, page.id) }
-            runCatching { graph.sync.onDocumentChanged(target.id) }
-            runCatching { graph.thumbnails.refresh(target.id) }
-            val fresh = graph.library.getDocument(target.id) ?: target
-            fresh to page
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             Log.e(TAG, "Send to notebook failed: ${t.javaClass.simpleName}")
@@ -463,8 +486,9 @@ class BoardOperations(private val c: WhiteboardController) {
         val canvas = c.canvas ?: return
         val clean = text.trim()
         if (clean.isEmpty()) return
-        canvas.insertText(0, clean, null, c.tools.text.copy(fontSizePt = c.tools.text.fontSizePt.coerceIn(12f, 18f)), origin = "ai")
-        c.messages.tryEmit(UiMessage(R.string.wb_ai_inserted))
+        val ref = canvas.insertText(0, clean, null, c.tools.text.copy(fontSizePt = c.tools.text.fontSizePt.coerceIn(12f, 18f)), origin = "ai")
+        // Null when the board page cannot be edited (it failed to load): nothing was added.
+        c.messages.tryEmit(UiMessage(if (ref != null) R.string.wb_ai_inserted else R.string.ink_page_not_editable))
     }
 
     // ------------------------------------------------------------------ Paper
@@ -486,5 +510,7 @@ class BoardOperations(private val c: WhiteboardController) {
     companion object {
         private const val TAG = "BoardOperations"
         private const val MAX_RENDER_PIXELS = 12_000_000f
+        /** Items drawn between cancellation checks of the overview render. */
+        private const val OVERVIEW_BATCH = 500
     }
 }

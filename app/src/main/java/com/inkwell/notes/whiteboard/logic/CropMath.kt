@@ -94,4 +94,11 @@ object ExportMath {
         if (w * h * s * s > maxPixels) s = kotlin.math.sqrt(maxPixels / (w * h))
         return s
     }
+
+    /**
+     * Whether a save target whose image could not be written may be deleted: only when it is
+     * known to be the empty document the picker just created ([targetSize] == 0). An unknown
+     * size or any content means the user may have picked an existing file to overwrite.
+     */
+    fun mayDeleteUnwrittenTarget(targetSize: Long?): Boolean = targetSize == 0L
 }

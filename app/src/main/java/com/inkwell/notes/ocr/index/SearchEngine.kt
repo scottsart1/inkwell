@@ -28,18 +28,19 @@ data class SearchOutcome(
 /**
  * Library-wide search: full-text matches from the FTS index, substring matches on titles,
  * tags and folder names, and (optionally) semantically similar passages, merged and ranked.
- * Documents in the trash never appear.
+ * Documents in the trash never appear. With a [documentId] only that document is searched,
+ * so its hits are never crowded out by other documents before the limit.
  */
 internal class SearchEngine(private val graph: AppGraph, private val semantic: SemanticIndex) {
 
-    suspend fun search(query: String, limit: Int, wantSemantic: Boolean): SearchOutcome = withContext(Dispatchers.IO) {
+    suspend fun search(query: String, limit: Int, wantSemantic: Boolean, documentId: String? = null): SearchOutcome = withContext(Dispatchers.IO) {
         val raw = query.trim().take(MAX_QUERY_CHARS)
         val ftsTokens = FtsQuery.tokens(raw)
         val terms = FtsQuery.matchTokens(raw)
         if (ftsTokens.isEmpty() || limit <= 0) return@withContext SearchOutcome(emptyList())
         val now = System.currentTimeMillis()
         val docs = graph.db.documents().getAll().asSequence()
-            .filter { it.trashedAt == null }
+            .filter { it.trashedAt == null && (documentId == null || it.id == documentId) }
             .map { it.toInfo() }
             .associateBy { it.id }
         if (docs.isEmpty()) return@withContext SearchOutcome(emptyList())
@@ -47,7 +48,7 @@ internal class SearchEngine(private val graph: AppGraph, private val semantic: S
 
         val fetch = (limit * 6).coerceIn(MIN_FETCH, MAX_FETCH)
         val keyword = ArrayList<Candidate>()
-        keywordRows(ftsTokens, raw, fetch).forEach { r -> toCandidate(r, docs)?.let { keyword += it } }
+        keywordRows(ftsTokens, raw, fetch, documentId).forEach { r -> toCandidate(r, docs)?.let { keyword += it } }
         keyword += HitAssembler.metaMatches(docs.values, folders, terms, raw)
 
         var used = false
@@ -77,14 +78,15 @@ internal class SearchEngine(private val graph: AppGraph, private val semantic: S
      * Full-text rows for [tokens]: the union of every case variant of the MATCH expression (the
      * simple tokenizer folds ASCII only, see [FtsQuery.variants]), each row once.
      */
-    private suspend fun keywordRows(tokens: List<String>, raw: String, limit: Int): List<TextSearchRow> {
+    private suspend fun keywordRows(tokens: List<String>, raw: String, limit: Int, documentId: String?): List<TextSearchRow> {
         val expressions = FtsQuery.variants(tokens)
         if (expressions.isEmpty()) return emptyList()
         val dao = graph.db.textIndex()
         val rows = LinkedHashMap<Long, TextSearchRow>()
         try {
             for (match in expressions) {
-                for (r in dao.searchLive(match, limit)) rows.putIfAbsent(r.rowId, r)
+                val found = if (documentId == null) dao.searchLive(match, limit) else dao.searchLiveInDocument(match, documentId, limit)
+                for (r in found) rows.putIfAbsent(r.rowId, r)
             }
         } catch (c: CancellationException) {
             throw c
@@ -92,7 +94,9 @@ internal class SearchEngine(private val graph: AppGraph, private val semantic: S
             // A MATCH expression the SQLite build rejects: fall back to a plain substring scan.
             Log.w(TAG, "Full-text query rejected, using substring search: ${e.javaClass.simpleName}")
             try {
-                for (r in dao.searchLiveLike(FtsQuery.escapeLike(raw), limit)) rows.putIfAbsent(r.rowId, r)
+                val needle = FtsQuery.escapeLike(raw)
+                val found = if (documentId == null) dao.searchLiveLike(needle, limit) else dao.searchLiveLikeInDocument(needle, documentId, limit)
+                for (r in found) rows.putIfAbsent(r.rowId, r)
             } catch (c: CancellationException) {
                 throw c
             } catch (e2: Exception) {

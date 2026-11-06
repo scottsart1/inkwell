@@ -341,6 +341,8 @@ internal class RenderManager(private val host: RenderHost, scope: CoroutineScope
             if (p != null && h != null && p.level === book) {
                 if (done.result == null) tile.failedAt = SystemClock.uptimeMillis()
                 if (book.finish(tile, ticket, done.result, h.visualVersion)) {
+                    // Counts as used now, so eviction below cannot drop it before it is drawn.
+                    tile.lastUsedFrame = frame
                     host.invalidatePages()
                     checkPending()
                 }

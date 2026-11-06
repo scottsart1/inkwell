@@ -14,16 +14,20 @@ import com.inkwell.notes.speakers.logic.ModelSpec
 import com.inkwell.notes.speakers.logic.RangeResume
 import com.inkwell.notes.speakers.logic.SpeakerModelSpecs
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Downloads the pinned speaker models once. Each file streams into "<name>.part" while its
@@ -92,66 +96,79 @@ class ModelDownloadWorker(appContext: Context, params: WorkerParameters) : Corou
                 .apply { if (from > 0) header("Range", "bytes=$from-") }
                 .build()
             val call = graph.http.newCall(request)
-            val cancelHook = currentCoroutineContext().job.invokeOnCompletion { call.cancel() }
-            try {
-                call.execute().use { response ->
-                    val action = RangeResume.onResponse(response.code, from, response.header("Content-Range"))
-                    val (append, start) = when (action) {
-                        RangeResume.Action.Append -> (from > 0) to from
-                        RangeResume.Action.Overwrite -> false to 0L
-                        RangeResume.Action.Restart -> {
-                            part.delete()
-                            return@use
-                        }
-                        is RangeResume.Action.Fail -> throw DownloadException(
-                            action.retryable,
-                            if (action.retryable) applicationContext.getString(R.string.speaker_engine_model_error_network)
-                            else applicationContext.getString(R.string.speaker_engine_model_error_server, response.code),
-                        )
-                    }
-                    val body = response.body ?: throw IOException("Empty body")
-                    val md = MessageDigest.getInstance("SHA-256")
-                    if (append) ModelFiles.digestPrefix(part, start, md)
-                    var written = start
-                    var lastProgress = 0L
-                    body.byteStream().use { input ->
-                        FileOutputStream(part, append).use { out ->
-                            val buf = ByteArray(BUFFER)
-                            while (true) {
-                                currentCoroutineContext().ensureActive()
-                                val n = input.read(buf)
-                                if (n < 0) break
-                                written += n
-                                if (written > spec.sizeBytes) {
-                                    // Not the file we pinned: never keep it.
-                                    out.close()
-                                    part.delete()
-                                    throw DownloadException(true, applicationContext.getString(R.string.speaker_engine_model_error_verify))
-                                }
-                                md.update(buf, 0, n)
-                                out.write(buf, 0, n)
-                                val now = SystemClock.elapsedRealtime()
-                                if (now - lastProgress >= PROGRESS_MS) {
-                                    lastProgress = now
-                                    setProgress(workDataOf(KEY_DONE to before + written, KEY_TOTAL to SpeakerModelSpecs.TOTAL_BYTES))
-                                }
-                            }
-                            out.flush()
-                            out.fd.sync()
-                        }
-                    }
-                    if (written < spec.sizeBytes) throw IOException("Connection closed early")
-                    when (ModelFiles.finish(part, target, spec, written, ModelFiles.hex(md.digest()))) {
-                        ModelFiles.Outcome.Ok -> {
-                            setProgress(workDataOf(KEY_DONE to before + spec.sizeBytes, KEY_TOTAL to SpeakerModelSpecs.TOTAL_BYTES))
-                            return
-                        }
-                        else -> throw DownloadException(true, applicationContext.getString(R.string.speaker_engine_model_error_verify))
-                    }
+            val done = coroutineScope {
+                // Cancelling the job cancels the call, which unblocks a read stalled on a dead
+                // connection (a completion handler would only run once the read had returned).
+                val finished = AtomicBoolean(false)
+                val watcher = launch(start = CoroutineStart.UNDISPATCHED) {
+                    try { awaitCancellation() } finally { if (!finished.get()) call.cancel() }
                 }
-            } finally {
-                cancelHook.dispose()
+                try {
+                    call.execute().use { response ->
+                        val action = RangeResume.onResponse(response.code, from, response.header("Content-Range"))
+                        val (append, start) = when (action) {
+                            RangeResume.Action.Append -> (from > 0) to from
+                            RangeResume.Action.Overwrite -> false to 0L
+                            RangeResume.Action.Restart -> {
+                                part.delete()
+                                return@use false
+                            }
+                            is RangeResume.Action.Fail -> throw DownloadException(
+                                action.retryable,
+                                if (action.retryable) applicationContext.getString(R.string.speaker_engine_model_error_network)
+                                else applicationContext.getString(R.string.speaker_engine_model_error_server, response.code),
+                            )
+                        }
+                        val body = response.body ?: throw IOException("Empty body")
+                        val md = MessageDigest.getInstance("SHA-256")
+                        if (append) ModelFiles.digestPrefix(part, start, md)
+                        var written = start
+                        var lastProgress = 0L
+                        body.byteStream().use { input ->
+                            FileOutputStream(part, append).use { out ->
+                                val buf = ByteArray(BUFFER)
+                                while (true) {
+                                    currentCoroutineContext().ensureActive()
+                                    val n = input.read(buf)
+                                    if (n < 0) break
+                                    written += n
+                                    if (written > spec.sizeBytes) {
+                                        // Not the file we pinned: never keep it.
+                                        out.close()
+                                        part.delete()
+                                        throw DownloadException(true, applicationContext.getString(R.string.speaker_engine_model_error_verify))
+                                    }
+                                    md.update(buf, 0, n)
+                                    out.write(buf, 0, n)
+                                    val now = SystemClock.elapsedRealtime()
+                                    if (now - lastProgress >= PROGRESS_MS) {
+                                        lastProgress = now
+                                        setProgress(workDataOf(KEY_DONE to before + written, KEY_TOTAL to SpeakerModelSpecs.TOTAL_BYTES))
+                                    }
+                                }
+                                out.flush()
+                                out.fd.sync()
+                            }
+                        }
+                        if (written < spec.sizeBytes) throw IOException("Connection closed early")
+                        when (ModelFiles.finish(part, target, spec, written, ModelFiles.hex(md.digest()))) {
+                            ModelFiles.Outcome.Ok -> {
+                                setProgress(workDataOf(KEY_DONE to before + spec.sizeBytes, KEY_TOTAL to SpeakerModelSpecs.TOTAL_BYTES))
+                                true
+                            }
+                            else -> throw DownloadException(true, applicationContext.getString(R.string.speaker_engine_model_error_verify))
+                        }
+                    }
+                } catch (e: IOException) {
+                    // The call was cancelled because the job was: that is a stop, not a network error.
+                    currentCoroutineContext().ensureActive()
+                    throw e
+                } finally {
+                    finished.set(true)
+                    watcher.cancel()
+                }
             }
+            if (done) return
         }
         throw DownloadException(true, applicationContext.getString(R.string.speaker_engine_model_error_network))
     }

@@ -26,41 +26,52 @@ import java.io.IOException
 data class SyncRunReport(
     val succeeded: Int = 0,
     val failed: Int = 0,
-    /** Items left waiting for a condition (network, unmetered network, vault settings). */
+    /** Items left waiting for a condition (network, unmetered network, Drive connection). */
     val deferred: Int = 0,
     /** A retryable failure happened: run again later with backoff. */
     val retryLater: Boolean = false,
-    /** The vault is locked until this time (epoch ms); 0 = not locked. */
-    val vaultLockedUntil: Long = 0,
+    /** Google Drive asked Inkwell to slow down: wait a few minutes before the next run. */
+    val slowDown: Boolean = false,
     /** Most relevant error of this run, user-readable; null when everything went through. */
     val error: String? = null,
 )
 
 /**
  * Processes `sync_queue`: copies notes (PDF/Markdown), transcripts and audio to the folder and/or
- * vault destinations. Local data is never changed except DocumentMeta.lastSyncedAt; deleting a
+ * Google Drive destinations. Local data is never changed except DocumentMeta.lastSyncedAt; deleting a
  * document never deletes its copies. One run at a time per process.
  */
 class SyncEngine(
     private val queue: () -> SyncQueueDao,
     private val source: SyncSource,
     private val prefs: () -> DestinationPrefs,
-    private val vaultClient: (VaultEndpoint) -> VaultClient,
+    /** A Drive client for the connected account (the email in [DestinationPrefs.driveAccount]). */
+    private val driveClient: (account: String) -> DriveApi,
     private val folders: FolderAccess,
     private val network: NetworkState,
     private val state: SyncStateStore,
-    /** Called when the folder permission is gone: clear the folder destination in settings. */
-    private val onFolderRevoked: suspend () -> Unit,
+    /**
+     * Called when the permission for the folder [revokedUri] is gone: clear the folder destination
+     * in settings, unless another folder was chosen meanwhile.
+     */
+    private val onFolderRevoked: suspend (revokedUri: String?) -> Unit,
     private val clock: () -> Long = System::currentTimeMillis,
     private val io: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
-    /** Resolves the saved vault link (HTTPS only); replaceable for tests against a local server. */
-    private val endpointFor: (String) -> VaultEndpoint? = VaultUrl::endpointOrNull,
 ) {
     private val runLock = Mutex()
     private val _running = MutableStateFlow(false)
     val running: StateFlow<Boolean> = _running.asStateFlow()
 
     @Volatile private var dirty = false
+
+    /**
+     * When each item that just failed may be tried again (queue row id -> epoch ms), so a run
+     * started early (a kick after an edit, a recording, a settings change) does not use up the
+     * retry attempts of items still waiting out their backoff during a server or folder outage.
+     * In memory only: after the process restarts every waiting item gets one immediate try.
+     * Guarded by [runLock].
+     */
+    private val retryAt = HashMap<Long, Long>()
 
     // ------------------------------------------------------------------ enqueueing
 
@@ -89,6 +100,42 @@ class SyncEngine(
             if (doc.lastSyncedAt == 0L || doc.modifiedAt > doc.lastSyncedAt + CHANGE_TOLERANCE_MS) {
                 n += enqueue(doc.id, SyncKind.NOTES, prefs.notes)
             }
+        }
+        return n
+    }
+
+    /**
+     * The document's title or place in the library changed: queues what moves its copies, without
+     * copying its notes to Google Drive again.
+     * - Folder (only when it holds copies of the document): one output is written again in the new
+     *   directory, and [Placement.finishMove] moves the rest there: the notes when they go to the
+     *   folder, otherwise one transcript, otherwise one recording.
+     * - Google Drive: the document's Drive folder is renamed and moved (see [driveMoveTargets]);
+     *   nothing is uploaded again.
+     */
+    suspend fun enqueueMoved(docId: String, prefs: DestinationPrefs = this.prefs()): Int {
+        var n = 0
+        val folder = setOf(OutputTarget.FOLDER)
+        if (state.folderLocation(prefs.folderUri.orEmpty(), docId) != null) {
+            if (OutputTarget.FOLDER in prefs.notes) {
+                n += enqueue(docId, SyncKind.NOTES, folder)
+            } else if (OutputTarget.FOLDER in prefs.transcripts || OutputTarget.FOLDER in prefs.audio) {
+                val recordings = source.recordings(docId)
+                // Only an output that syncTranscript/syncAudio actually writes runs finishMove: a
+                // finished transcript with no segments (a silent recording) is skipped there.
+                val transcript = if (OutputTarget.FOLDER !in prefs.transcripts) null else recordings.firstOrNull {
+                    it.transcriptStatus == TranscriptStatus.DONE && source.transcript(it.id)?.segments?.isNotEmpty() == true
+                }
+                val audio = recordings.firstOrNull { it.isFinished() && it.segmentFiles.isNotEmpty() }
+                    ?.takeIf { OutputTarget.FOLDER in prefs.audio }
+                when {
+                    transcript != null -> n += enqueue(docId, SyncKind.TRANSCRIPT, folder, transcript.id)
+                    audio != null -> n += enqueue(docId, SyncKind.AUDIO, folder, audio.id)
+                }
+            }
+        }
+        if (OutputTarget.DRIVE in prefs.driveMoveTargets() && state.driveDocFolder(docId) != null) {
+            n += enqueue(docId, SyncKind.NOTES, setOf(OutputTarget.DRIVE), DRIVE_MOVE_REF)
         }
         return n
     }
@@ -126,35 +173,63 @@ class SyncEngine(
 
     // ------------------------------------------------------------------ running
 
-    /** Processes every item in [scope] that can go now. Waits if another run is in progress. */
-    suspend fun run(scope: SyncScope = SyncScope.ALL): SyncRunReport = runLock.withLock {
+    /**
+     * Processes every item in [scope] that can go now. Waits if another run is in progress. Items
+     * that failed recently wait for their backoff ([retryDelayMs]) unless [ignoreBackoff] ("Sync now").
+     */
+    suspend fun run(scope: SyncScope = SyncScope.ALL, ignoreBackoff: Boolean = false): SyncRunReport = runLock.withLock {
         _running.value = true
         try {
-            withContext(io) { runLocked(scope) }
+            withContext(io) { runLocked(scope, ignoreBackoff) }
         } finally {
             _running.value = false
         }
     }
 
-    private suspend fun runLocked(scope: SyncScope): SyncRunReport {
-        val ctx = RunContext(prefs())
+    private suspend fun runLocked(scope: SyncScope, ignoreBackoff: Boolean): SyncRunReport {
+        var ctx = RunContext(prefs())
         val attempted = HashSet<Long>()
+        val seenPending = HashSet<Long>()
         try {
             while (true) {
                 dirty = false
-                val items = queue().pending(QUERY_LIMIT)
-                    .filter { it.rowId !in attempted && scope.accepts(it) }
-                    .sortedWith(compareBy<SyncQueueEntity>({ kindOrder(it.kind) }, { it.documentId }, { it.enqueuedAt }, { it.rowId }))
-                if (items.isEmpty() && !dirty) break
-                for (item in items) {
-                    currentCoroutineContext().ensureActive()
-                    attempted += item.rowId
-                    processOne(item, ctx)
+                var processed = false
+                // Page through the whole queue: items left waiting at its head (offline, Wi-Fi
+                // only, another scope) must not hide the ones behind them.
+                var afterAt = Long.MIN_VALUE
+                var afterRowId = Long.MIN_VALUE
+                while (true) {
+                    val page = queue().pendingAfter(afterAt, afterRowId, QUERY_LIMIT)
+                    page.forEach { seenPending += it.rowId }
+                    val items = page
+                        .filter { it.rowId !in attempted && scope.accepts(it) }
+                        .sortedWith(compareBy<SyncQueueEntity>({ kindOrder(it.kind) }, { it.documentId }, { it.enqueuedAt }, { it.rowId }))
+                    for (item in items) {
+                        currentCoroutineContext().ensureActive()
+                        // Destinations can change during a long run: each item goes by the current settings.
+                        ctx = ctx.following(prefs())
+                        attempted += item.rowId
+                        if (!ignoreBackoff && waitingOutBackoff(item)) {
+                            // Its next try is due later: the run comes back (worker retry) for it.
+                            ctx.defer()
+                            ctx.waitingBackoff++
+                            ctx.retryLater = true
+                            continue
+                        }
+                        processed = true
+                        processOne(item, ctx)
+                    }
+                    if (page.size < QUERY_LIMIT) break
+                    afterAt = page.last().enqueuedAt
+                    afterRowId = page.last().rowId
                 }
+                if (!processed && !dirty) break
             }
         } finally {
             ctx.exports.clear()
         }
+        // Forget rows that are no longer pending (done, failed, replaced or dropped meanwhile).
+        if (scope == SyncScope.ALL) retryAt.keys.retainAll(seenPending)
         val now = clock()
         runCatching {
             queue().pruneDone(now - KEEP_DONE_MS)
@@ -163,14 +238,15 @@ class SyncEngine(
         if (ctx.succeeded > 0) state.lastSuccessAt = ctx.lastSuccessAt
         val error = ctx.error
         if (error != null) state.lastError = error
-        // A partial run (folder only, audio only) can't vouch for the other destination.
-        else if (scope == SyncScope.ALL && (ctx.succeeded > 0 || ctx.failed == 0)) state.lastError = null
+        // A partial run (folder only, audio only) can't vouch for the other destination, and a run
+        // that only skipped items waiting out their backoff proves nothing about the outage.
+        else if (scope == SyncScope.ALL && (ctx.succeeded > 0 || (ctx.failed == 0 && ctx.waitingBackoff == 0))) state.lastError = null
         return SyncRunReport(
             succeeded = ctx.succeeded,
             failed = ctx.failed,
             deferred = ctx.deferred,
             retryLater = ctx.retryLater,
-            vaultLockedUntil = state.vaultLockedUntil.takeIf { it > now } ?: 0,
+            slowDown = ctx.slowDown,
             error = error,
         )
     }
@@ -178,16 +254,16 @@ class SyncEngine(
     private suspend fun processOne(item: SyncQueueEntity, ctx: RunContext) {
         val kind = runCatching { SyncKind.valueOf(item.kind) }.getOrNull()
         val target = runCatching { OutputTarget.valueOf(item.target) }.getOrNull()
-        if (kind == null || target == null || target !in ctx.prefs.targetsFor(kind)) {
+        if (kind == null || target == null || target !in targetsFor(kind, item.refId, ctx.prefs)) {
             // Unknown row or the destination was switched off meanwhile: nothing to do.
             finish(item, SyncItemStatus.DONE, item.attempts, null)
             return
         }
         when (target) {
-            OutputTarget.VAULT -> {
+            OutputTarget.DRIVE -> {
                 if (!network.isOnline()) return ctx.defer()
                 if (kind == SyncKind.AUDIO && ctx.prefs.audioOnUnmeteredOnly && !network.isUnmetered()) return ctx.defer()
-                if (ctx.vaultBlocked != null) return ctx.defer()
+                if (ctx.driveBlocked != null) return ctx.defer()
             }
             OutputTarget.FOLDER -> if (ctx.folderBlocked != null) return ctx.defer()
         }
@@ -209,29 +285,19 @@ class SyncEngine(
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (e: VaultException) {
-            onVaultError(item, e, ctx)
+        } catch (e: DriveException) {
+            onDriveError(item, e, ctx)
         } catch (e: FolderRevokedException) {
-            ctx.folderBlocked = e
-            ctx.failed++
-            ctx.error = e.message
-            finish(item, SyncItemStatus.FAILED, item.attempts + 1, e.message)
-            runCatching { queue().failPendingForTarget(OutputTarget.FOLDER.name, e.message.orEmpty()) }
-            runCatching { onFolderRevoked() }
+            onFolderLost(item, e, ctx)
         } catch (e: FolderUnavailableException) {
             ctx.folderBlocked = e
             ctx.retryLater = true
             ctx.error = e.message
             finish(item, SyncItemStatus.PENDING, item.attempts + 1, e.message)
         } catch (e: SecurityException) {
-            val revoked = FolderRevokedException(e)
-            if (target == OutputTarget.FOLDER) {
-                ctx.folderBlocked = revoked
-                runCatching { queue().failPendingForTarget(OutputTarget.FOLDER.name, revoked.message.orEmpty()) }
-                runCatching { onFolderRevoked() }
-            }
+            if (target == OutputTarget.FOLDER) return onFolderLost(item, FolderRevokedException(e), ctx)
             ctx.failed++
-            ctx.error = if (target == OutputTarget.FOLDER) revoked.message else genericError(item, ctx, e)
+            ctx.error = genericError(item, ctx, e)
             finish(item, SyncItemStatus.FAILED, item.attempts + 1, ctx.error)
         } catch (e: Throwable) {
             // IOException from the folder, export failures, anything else: retry a few times.
@@ -245,20 +311,43 @@ class SyncEngine(
         }
     }
 
-    private suspend fun onVaultError(item: SyncQueueEntity, e: VaultException, ctx: RunContext) {
-        Log.w(TAG, "Vault ${item.kind} failed: ${e.javaClass.simpleName}")
+    /**
+     * The folder refused access: its items fail and the destination is cleared. When the user
+     * chose another folder during this run, it is the old folder's access that went away: the
+     * item waits for the new folder (which gets its own copies queued) and nothing else changes.
+     */
+    private suspend fun onFolderLost(item: SyncQueueEntity, e: FolderRevokedException, ctx: RunContext) {
+        ctx.folderBlocked = e
+        val revokedUri = ctx.prefs.folderUri
+        if (prefs().folderUri != revokedUri) {
+            ctx.defer()
+            finish(item, SyncItemStatus.PENDING, item.attempts, null)
+            return
+        }
+        ctx.failed++
         ctx.error = e.message
-        if (e is VaultException.Locked) state.vaultLockedUntil = clock() + e.retryAfterSeconds * 1000
-        // The vault counts failed logins per address and locks it after a few: once the stored
-        // password was refused, stop trying until it changes (or the lockout window has passed).
-        if (e is VaultException.WrongPassword && !ctx.heldForCredentials) state.vaultCredentialsRefusedAt = clock()
-        if (e.blocksVault) {
-            // Settings or connectivity problem: keep the item, stop vault work for this run.
-            ctx.vaultBlocked = e
+        finish(item, SyncItemStatus.FAILED, item.attempts + 1, e.message)
+        runCatching { queue().failPendingForTarget(OutputTarget.FOLDER.name, e.message.orEmpty()) }
+        runCatching { onFolderRevoked(revokedUri) }
+    }
+
+    private suspend fun onDriveError(item: SyncQueueEntity, e: DriveException, ctx: RunContext) {
+        Log.w(TAG, "Drive ${item.kind} failed: ${e.javaClass.simpleName}")
+        ctx.error = e.message
+        if (e is DriveException.NotFound) {
+            // A folder was deleted in Drive while Inkwell used it: find or recreate it next time.
+            ctx.driveLayout?.forgetDocument(item.documentId)
+            ctx.driveLayout?.reset()
+        }
+        if (e.blocksDrive) {
+            // Account, setup or connectivity problem: keep the item, stop Drive work for this run.
+            ctx.driveBlocked = e
             ctx.deferred++
             if (e.retryable) ctx.retryLater = true
-            val attempts = if (e is VaultException.Unreachable || e is VaultException.InsecureConnection) item.attempts + 1 else item.attempts
-            finish(item, SyncItemStatus.PENDING, attempts, e.message)
+            if (e is DriveException.RateLimited) ctx.slowDown = true
+            // Waiting for Drive or the network is not a failed attempt of this item: counting
+            // it would make the item give up at its first real server error later.
+            finish(item, SyncItemStatus.PENDING, item.attempts, e.message)
             return
         }
         val attempts = item.attempts + 1
@@ -274,7 +363,7 @@ class SyncEngine(
             SyncKind.AUDIO.name -> "the recording"
             else -> "the notes"
         }
-        val where = if (item.target == OutputTarget.FOLDER.name) "to the folder" else "to the vault"
+        val where = if (item.target == OutputTarget.FOLDER.name) "to the folder" else "to Google Drive"
         val reason = when (e) {
             is IOException -> e.message?.takeIf { it.isNotBlank() && it.length < 200 } ?: "a file couldn't be written"
             is OutOfMemoryError -> "not enough memory"
@@ -286,31 +375,43 @@ class SyncEngine(
 
     private suspend fun finish(item: SyncQueueEntity, status: String, attempts: Int, error: String?) {
         queue().setOutcome(item.rowId, status, attempts, error?.take(500))
+        // A failed try that will be retried waits out its backoff; anything else goes when it can.
+        if (status == SyncItemStatus.PENDING && attempts > item.attempts) retryAt[item.rowId] = clock() + retryDelayMs(attempts)
+        else retryAt.remove(item.rowId)
+    }
+
+    private fun waitingOutBackoff(item: SyncQueueEntity): Boolean {
+        val due = retryAt[item.rowId] ?: return false
+        // Attempts reset to 0 ("Sync now" retrying failed items): no backoff left to wait out.
+        return item.attempts > 0 && clock() < due
     }
 
     // ------------------------------------------------------------------ per kind
 
     private suspend fun syncNotes(item: SyncQueueEntity, target: OutputTarget, ctx: RunContext): Outcome {
+        if (item.refId == DRIVE_MOVE_REF) return syncDriveMove(item, target, ctx)
         val doc = source.document(item.documentId)?.takeIf { it.trashedAt == null } ?: return Outcome.Skipped
         val format = ctx.prefs.notesFormat
         // Edits made while this copy is being made must count as unsynced: stamp the start time.
         val startedAt = clock()
         when (target) {
-            OutputTarget.VAULT -> {
-                val client = ctx.vault()
-                val id = VaultNames.docId(doc.id)
-                val markdown = ctx.markdown(doc.id)
-                client.putDoc(id, SyncPayloads.docUpsert(doc, source.folderPath(doc.folderId), markdown))
-                ctx.knownVaultDocs?.add(id)
-                if (format.includesPdf) client.putFile(id, VaultNames.NOTES_PDF, ctx.pdf(doc.id), VaultNames.MIME_PDF)
-                if (format.includesMarkdown) client.putBytes(id, VaultNames.NOTES_MD, markdown.encodeToByteArray(), VaultNames.MIME_MARKDOWN)
+            OutputTarget.DRIVE -> {
+                val drive = ctx.drive()
+                val dir = drive.documentFolder(doc, source.folderNames(doc.folderId))
+                if (format.includesPdf) {
+                    drive.put(dir, DriveNames.NOTES_PDF_KEY, FolderNaming.NOTES_PDF, MIME_PDF, DriveContent.FromFile(ctx.pdf(doc.id)))
+                }
+                if (format.includesMarkdown) {
+                    val bytes = ctx.markdown(doc.id).encodeToByteArray()
+                    drive.put(dir, DriveNames.NOTES_MD_KEY, FolderNaming.NOTES_MD, MIME_MARKDOWN, DriveContent.Bytes(bytes))
+                }
             }
             OutputTarget.FOLDER -> {
                 val root = ctx.folderRoot()
                 val place = documentDir(root, doc, ctx)
                 if (format.includesPdf) {
                     val pdf = ctx.pdf(doc.id)
-                    FolderWriter.writeFile(place.dir, FolderNaming.NOTES_PDF, VaultNames.MIME_PDF) { out -> pdf.inputStream().use { it.copyTo(out) } }
+                    FolderWriter.writeFile(place.dir, FolderNaming.NOTES_PDF, MIME_PDF) { out -> pdf.inputStream().use { it.copyTo(out) } }
                 }
                 if (format.includesMarkdown) {
                     val bytes = ctx.markdown(doc.id).encodeToByteArray()
@@ -329,10 +430,19 @@ class SyncEngine(
         val doc = source.document(rec.documentId)?.takeIf { it.trashedAt == null } ?: return Outcome.Skipped
         val transcript = source.transcript(recId)?.takeIf { it.segments.isNotEmpty() } ?: return Outcome.Skipped
         when (target) {
-            OutputTarget.VAULT -> {
-                val client = ctx.vault()
-                val id = ensureVaultDoc(client, doc, ctx)
-                client.putTranscript(id, VaultNames.recordingId(rec.id), SyncPayloads.transcriptUpsert(rec, transcript.segments, transcript.source))
+            OutputTarget.DRIVE -> {
+                val drive = ctx.drive()
+                val dir = drive.documentFolder(doc, source.folderNames(doc.folderId))
+                val stem = FolderNaming.recordingStem(rec, source.recordings(doc.id))
+                val html = SyncPayloads.transcriptHtml(rec, transcript.segments, doc.title).encodeToByteArray()
+                val key = DriveNames.transcriptKey(rec.id)
+                try {
+                    drive.put(dir, key, DriveNames.transcriptDocName(stem), DriveNames.MIME_HTML, DriveContent.Bytes(html), convertTo = DriveNames.MIME_GOOGLE_DOC)
+                } catch (e: DriveException.Rejected) {
+                    // Drive wouldn't make a Google Doc of it: keep the transcript as a Markdown file instead.
+                    val md = SyncPayloads.transcriptMarkdown(rec, transcript.segments, doc.title).encodeToByteArray()
+                    drive.put(dir, key, FolderNaming.transcriptFile(stem), MIME_MARKDOWN, DriveContent.Bytes(md))
+                }
             }
             OutputTarget.FOLDER -> {
                 val place = documentDir(ctx.folderRoot(), doc, ctx)
@@ -352,16 +462,17 @@ class SyncEngine(
         if (rec.segmentFiles.isEmpty()) return Outcome.Skipped
         val doc = source.document(rec.documentId)?.takeIf { it.trashedAt == null } ?: return Outcome.Skipped
         when (target) {
-            OutputTarget.VAULT -> {
-                val client = ctx.vault()
-                val id = ensureVaultDoc(client, doc, ctx)
-                client.putFile(id, VaultNames.audioFile(rec.id), ctx.audio(rec.id), VaultNames.MIME_AUDIO)
+            OutputTarget.DRIVE -> {
+                val drive = ctx.drive()
+                val dir = drive.documentFolder(doc, source.folderNames(doc.folderId))
+                val stem = FolderNaming.recordingStem(rec, source.recordings(doc.id))
+                drive.put(dir, DriveNames.audioKey(rec.id), FolderNaming.audioFile(stem), MIME_AUDIO, DriveContent.FromFile(ctx.audio(rec.id)))
             }
             OutputTarget.FOLDER -> {
                 val place = documentDir(ctx.folderRoot(), doc, ctx)
                 val stem = FolderNaming.recordingStem(rec, source.recordings(doc.id))
                 val file = ctx.audio(rec.id)
-                FolderWriter.writeFile(place.dir, FolderNaming.audioFile(stem), VaultNames.MIME_AUDIO) { out -> file.inputStream().use { it.copyTo(out) } }
+                FolderWriter.writeFile(place.dir, FolderNaming.audioFile(stem), MIME_AUDIO) { out -> file.inputStream().use { it.copyTo(out) } }
                 place.finishMove(doc, SyncKind.AUDIO, rec.id)
             }
         }
@@ -369,48 +480,54 @@ class SyncEngine(
     }
 
     /**
-     * Makes sure the vault has a document row for [doc] before a transcript or audio file is
-     * attached, so the vault shows the real title. Uses the full notes when notes go to the vault
-     * too; otherwise metadata only. Never overwrites a document the vault already has.
+     * After a move or rename: the document's Drive folder takes its new title and place. Nothing is
+     * uploaded again, and a document Drive doesn't have yet is not created.
      */
-    private suspend fun ensureVaultDoc(client: VaultClient, doc: DocumentMeta, ctx: RunContext): String {
-        val id = VaultNames.docId(doc.id)
-        val known = ctx.knownVaultDocs ?: client.listDocIds().toHashSet().also { ctx.knownVaultDocs = it }
-        if (id in known) return id
-        // The vault lists at most VAULT_LIST_CAP documents; beyond that, absence from the list
-        // proves nothing, and re-creating the doc metadata-only would wipe its stored notes.
-        if (known.size >= VAULT_LIST_CAP && client.hasDoc(id)) {
-            known += id
-            return id
-        }
-        val markdown = if (OutputTarget.VAULT in ctx.prefs.notes) ctx.markdown(doc.id) else null
-        client.putDoc(id, SyncPayloads.docUpsert(doc, source.folderPath(doc.folderId), markdown))
-        known += id
-        return id
+    private suspend fun syncDriveMove(item: SyncQueueEntity, target: OutputTarget, ctx: RunContext): Outcome {
+        if (target != OutputTarget.DRIVE) return Outcome.Skipped
+        val doc = source.document(item.documentId)?.takeIf { it.trashedAt == null } ?: return Outcome.Skipped
+        if (state.driveDocFolder(doc.id) == null) return Outcome.Skipped
+        ctx.drive().documentFolder(doc, source.folderNames(doc.folderId))
+        return Outcome.Done
     }
 
     // ------------------------------------------------------------------ folder placement
 
-    /** The document's directory, following a rename or move since the last copy. */
+    /**
+     * The document's directory, following a rename or move since the last copy. A directory that
+     * holds another document's copies (one using the title before, or a deleted document whose
+     * copies are kept) is never written into, renamed or emptied: the document gets its own
+     * directory with a short id suffix instead.
+     */
     private suspend fun documentDir(root: FolderNode, doc: DocumentMeta, ctx: RunContext): Placement {
         ctx.placements[doc.id]?.let { return it }
-        val segments = FolderNaming.documentDir(source.folderNames(doc.folderId), doc.title, doc.id)
-        val previous = state.folderLocation(doc.id)
+        val folderNames = source.folderNames(doc.folderId)
+        var segments = FolderNaming.documentDir(folderNames, doc.title, doc.id)
+        val previous = state.folderLocation(ctx.folderKey, doc.id)
+        if (ctx.ownersOf(segments).any { it != doc.id }) {
+            if (FolderWriter.findDir(root, segments) != null) {
+                segments = FolderNaming.documentDir(folderNames, doc.title, doc.id, withId = true)
+            } else {
+                // Those copies are gone from the folder: the name is free again.
+                ctx.forgetOwners(segments)
+            }
+        }
         var oldDir: FolderNode? = null
-        if (previous != null && previous != segments) {
+        val oldShared = previous != null && ctx.ownersOf(previous).any { it != doc.id }
+        if (previous != null && previous != segments && !oldShared) {
             val old = FolderWriter.findDir(root, previous)
             if (old != null) {
                 val parentSegments = segments.dropLast(1)
                 val parent = if (previous.dropLast(1) == parentSegments) FolderWriter.findDir(root, parentSegments) else null
                 if (parent != null && FolderWriter.renameDirInPlace(old, segments.last(), parent)) {
-                    state.setFolderLocation(doc.id, segments)
+                    ctx.setLocation(doc.id, previous, segments)
                     return Placement(old, null, doc.id).also { ctx.placements[doc.id] = it }
                 }
                 oldDir = old
             }
         }
         val dir = FolderWriter.ensureDirs(root, segments)
-        state.setFolderLocation(doc.id, segments)
+        ctx.setLocation(doc.id, previous, segments)
         return Placement(dir, oldDir, doc.id).also { ctx.placements[doc.id] = it }
     }
 
@@ -437,23 +554,57 @@ class SyncEngine(
 
     // ------------------------------------------------------------------ run state
 
-    private inner class RunContext(val prefs: DestinationPrefs) {
-        var succeeded = 0
-        var failed = 0
-        var deferred = 0
-        var retryLater = false
-        var lastSuccessAt = 0L
-        var error: String? = null
-        var vaultBlocked: VaultException? = null
-        /** True when this run's vault error came from the credentials hold, not from the vault. */
-        var heldForCredentials = false
-        var folderBlocked: Exception? = null
-        var knownVaultDocs: HashSet<String>? = null
-        val placements = HashMap<String, Placement>()
-        private var client: VaultClient? = null
-        private var root: FolderNode? = null
-        private var markdownCache: Pair<String, String>? = null
-        val exports = ExportCache(source)
+    /**
+     * State of one run under one set of destination settings. When the settings change during
+     * the run, [following] continues with a new context that keeps the results so far and what
+     * is still true of the Drive account or folder that did not change.
+     */
+    private inner class RunContext(val prefs: DestinationPrefs, previous: RunContext? = null) {
+        private val sameDrive: Boolean = previous != null && previous.prefs.driveAccount == prefs.driveAccount
+        private val sameFolder: Boolean = previous != null && previous.prefs.folderUri == prefs.folderUri
+        var succeeded: Int = previous?.succeeded ?: 0
+        var failed: Int = previous?.failed ?: 0
+        var deferred: Int = previous?.deferred ?: 0
+        /** Items skipped because they were waiting out their retry backoff. */
+        var waitingBackoff: Int = previous?.waitingBackoff ?: 0
+        var retryLater: Boolean = previous?.retryLater ?: false
+        var lastSuccessAt: Long = previous?.lastSuccessAt ?: 0L
+        var error: String? = previous?.error
+        var driveBlocked: DriveException? = previous?.driveBlocked?.takeIf { sameDrive }
+        /** Google asked to slow down: the next background run waits a little. */
+        var slowDown: Boolean = previous?.slowDown ?: false
+        var folderBlocked: Exception? = previous?.folderBlocked?.takeIf { sameFolder }
+        val placements: HashMap<String, Placement> = previous?.placements?.takeIf { sameFolder } ?: HashMap()
+        var driveLayout: DriveLayout? = previous?.driveLayout?.takeIf { sameDrive }
+            private set
+        private var root: FolderNode? = previous?.root?.takeIf { sameFolder }
+        /** Folder location -> documents whose copies are there; loaded on first use. */
+        private var ownerMap: HashMap<List<String>, HashSet<String>>? = previous?.ownerMap?.takeIf { sameFolder }
+        private var markdownCache: Pair<String, String>? = previous?.markdownCache
+        /** The folder destination whose document locations this run reads and writes. */
+        val folderKey: String get() = prefs.folderUri.orEmpty()
+        val exports: ExportCache = previous?.exports ?: ExportCache(source)
+
+        /** This context while the settings are still [current]; otherwise a new one for them. */
+        fun following(current: DestinationPrefs): RunContext = if (current == prefs) this else RunContext(current, this)
+
+        private fun owners(): HashMap<List<String>, HashSet<String>> = ownerMap ?: HashMap<List<String>, HashSet<String>>().also { map ->
+            for ((docId, segments) in state.folderLocations(folderKey)) map.getOrPut(segments) { HashSet() } += docId
+            ownerMap = map
+        }
+
+        fun ownersOf(segments: List<String>): Set<String> = owners()[segments].orEmpty()
+
+        fun forgetOwners(segments: List<String>) {
+            owners().remove(segments)?.forEach { state.setFolderLocation(folderKey, it, null) }
+        }
+
+        fun setLocation(docId: String, from: List<String>?, segments: List<String>) {
+            state.setFolderLocation(folderKey, docId, segments)
+            val map = owners()
+            if (from != null) map[from]?.remove(docId)
+            map.getOrPut(segments) { HashSet() } += docId
+        }
 
         suspend fun markdown(docId: String): String {
             markdownCache?.takeIf { it.first == docId }?.let { return it.second }
@@ -467,19 +618,11 @@ class SyncEngine(
             deferred++
         }
 
-        fun vault(): VaultClient {
-            vaultBlocked?.let { throw it }
-            val now = clock()
-            val lockedUntil = state.vaultLockedUntil
-            if (lockedUntil > now) throw VaultException.Locked((lockedUntil - now + 999) / 1000)
-            val refusedAt = state.vaultCredentialsRefusedAt
-            if (refusedAt > 0 && now - refusedAt < CREDENTIALS_HOLD_MS) {
-                heldForCredentials = true
-                throw VaultException.WrongPassword()
-            }
-            client?.let { return it }
-            val endpoint = endpointFor(prefs.vaultUrl) ?: throw VaultException.MissingLink()
-            return vaultClient(endpoint).also { client = it }
+        fun drive(): DriveLayout {
+            driveBlocked?.let { throw it }
+            driveLayout?.let { return it }
+            val account = prefs.driveAccount?.takeIf { it.isNotBlank() } ?: throw DriveException.NotConnected()
+            return DriveLayout(driveClient(account), state, prefs.driveShareLink).also { driveLayout = it }
         }
 
         fun folderRoot(): FolderNode {
@@ -492,17 +635,32 @@ class SyncEngine(
     private enum class Outcome { Done, Skipped, NotReady }
 
     companion object {
-        /** Maximum rows the vault returns from GET api/docs (see web/notes-vault/src/api.ts). */
-        internal const val VAULT_LIST_CAP = 2000
+        /**
+         * `refId` of a NOTES item for Google Drive that only renames/moves the document's Drive
+         * folder after a move or rename in the library: see [enqueueMoved].
+         */
+        const val DRIVE_MOVE_REF = "move"
+
+        /** Where an item may go under [prefs]: a folder move goes to Drive while anything goes there. */
+        internal fun targetsFor(kind: SyncKind, refId: String?, prefs: DestinationPrefs): Set<OutputTarget> =
+            if (kind == SyncKind.NOTES && refId == DRIVE_MOVE_REF) prefs.driveMoveTargets() else prefs.targetsFor(kind)
         private const val TAG = "InkwellSync"
         const val MAX_ATTEMPTS = 8
-        /** After the vault refused the password, no login is attempted for this long (the vault's lockout window). */
-        const val CREDENTIALS_HOLD_MS = 15L * 60 * 1000
+        /** Wait before the first retry of a failed item; doubles per attempt (as the worker's own backoff). */
+        const val RETRY_BASE_MS = 30_000L
+        private const val MAX_RETRY_DELAY_MS = 60L * 60 * 1000
+        const val MIME_PDF = "application/pdf"
+        const val MIME_MARKDOWN = "text/markdown"
+        const val MIME_AUDIO = "audio/mp4"
         private const val QUERY_LIMIT = 5000
         /** A document counts as changed when edited more than this after its last copy. */
         const val CHANGE_TOLERANCE_MS = 2_000L
         private const val KEEP_DONE_MS = 7L * 24 * 3600 * 1000
         private const val KEEP_FAILED_MS = 30L * 24 * 3600 * 1000
+
+        /** How long an item that failed [attempts] times waits before its next try. */
+        fun retryDelayMs(attempts: Int): Long =
+            (RETRY_BASE_MS shl (attempts - 1).coerceIn(0, 20)).coerceAtMost(MAX_RETRY_DELAY_MS)
 
         private fun kindOrder(kind: String): Int = when (kind) {
             SyncKind.NOTES.name -> 0

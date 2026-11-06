@@ -8,7 +8,7 @@
     <string name="sync_row_audio">Audio recordings</string>
     <string name="sync_chip_device">This tablet</string>
     <string name="sync_chip_folder">Folder</string>
-    <string name="sync_chip_vault">Your Pit Box vault</string>
+    <string name="sync_chip_drive">Google Drive</string>
     <string name="sync_chip_device_note">Always on: the original stays on this tablet.</string>
     <string name="sync_notes_format">Notes format</string>
     <string name="sync_format_pdf">PDF</string>
@@ -16,7 +16,7 @@
     <string name="sync_format_both">Both</string>
 
     <string name="sync_folder_title">Folder</string>
-    <string name="sync_folder_subtitle">Google Drive, Files, an SD card, or any folder another app offers.</string>
+    <string name="sync_folder_subtitle">A folder on this tablet, an SD card, or any folder another app offers in the folder picker.</string>
     <string name="sync_folder_none">No folder chosen</string>
     <string name="sync_folder_choose">Choose folder…</string>
     <string name="sync_folder_change">Change folder…</string>
@@ -26,32 +26,54 @@
     <string name="sync_folder_permission_error">Inkwell couldn\'t keep access to that folder. Choose it again.</string>
     <string name="sync_folder_not_writable">This folder can\'t be written to. Choose another one.</string>
 
-    <string name="sync_vault_title">Your Pit Box vault</string>
-    <string name="sync_vault_subtitle">Your private notes vault on yourpitbox.com. The link and password stay on this tablet.</string>
-    <string name="sync_vault_url">Vault link</string>
-    <string name="sync_vault_password">Password</string>
-    <string name="sync_vault_password_saved">Saved. Type a new one to replace it.</string>
-    <string name="sync_vault_password_hint">Vault password</string>
-    <string name="sync_vault_password_show">Show password</string>
-    <string name="sync_vault_password_hide">Hide password</string>
-    <string name="sync_vault_forget">Forget password</string>
-    <string name="sync_vault_test">Test connection</string>
-    <string name="sync_vault_open">Open vault in browser</string>
-    <string name="sync_vault_needs_setup">Add the vault link and password to start uploading.</string>
-    <string name="sync_vault_browser_error">No browser is available to open the vault.</string>
+    <string name="sync_drive_title">Google Drive</string>
+    <string name="sync_drive_subtitle">Read your notes, transcripts and recordings on any computer at drive.google.com, including a work laptop. Inkwell can only see the files it creates there.</string>
+    <string name="sync_drive_not_connected">Not connected</string>
+    <string name="sync_drive_connect">Connect Google Drive</string>
+    <string name="sync_drive_connecting">Connecting…</string>
+    <string name="sync_drive_connected_as">Connected as %1$s. Copies go to My Drive › Inkwell.</string>
+    <string name="sync_drive_open">Open Drive in browser</string>
+    <string name="sync_drive_disconnect">Disconnect</string>
+    <string name="sync_drive_reconnect">Reconnect</string>
+    <string name="sync_drive_link_title">Open on any computer without signing in</string>
+    <string name="sync_drive_link_subtitle">For a work computer that can\'t sign in to your Google account. Anyone who has the link can view your Inkwell folder (not change it). Off withdraws the link.</string>
+    <string name="sync_drive_link_hint">Send this link to yourself and bookmark it on the other computer.</string>
+    <string name="sync_drive_link_pending">The link appears once the Inkwell folder is shared. Tap Test if it doesn\'t show up.</string>
+    <string name="sync_drive_link_copy">Copy link</string>
+    <string name="sync_drive_link_send">Send link</string>
+    <string name="sync_drive_disconnect_title">Disconnect Google Drive?</string>
+    <string name="sync_drive_disconnect_body">Inkwell stops copying to Drive, withdraws a shared link and gives up its access. Everything already in your Drive stays there.</string>
+    <string name="sync_drive_pick_outputs">Connected. Choose Google Drive for notes, transcripts or audio above to start copying.</string>
+    <string name="sync_drive_layout">Files are saved as My Drive › Inkwell › folder › document › notes.pdf, notes.md, transcript_… (a Google Doc) and audio_….m4a.</string>
+    <string name="sync_drive_cancelled">Google Drive wasn\'t connected.</string>
+    <string name="sync_drive_no_consent">Google\'s sign-in screen couldn\'t be opened. Make sure Google Play services is up to date.</string>
+    <string name="sync_drive_unavailable">Google Drive couldn\'t be reached. Try again.</string>
+    <string name="sync_drive_browser_error">No browser is available to open Google Drive.</string>
+    <string name="sync_drive_setup_show">One-time Google setup…</string>
+    <string name="sync_drive_setup_hide">Hide setup steps</string>
+    <string name="sync_drive_setup_intro">Google only lets an app reach Drive once it has been registered. Do this once, on a computer, with the Google account you want to use (about 10 minutes):</string>
+    <string name="sync_drive_setup_step1">Open console.cloud.google.com and create a project, for example “Inkwell”.</string>
+    <string name="sync_drive_setup_step2">APIs &amp; Services › Library: search for “Google Drive API” and click Enable.</string>
+    <string name="sync_drive_setup_step3">Google Auth Platform › Branding: app name “Inkwell”, your email as support and developer contact; leave the logo and app domain empty. Audience: External, stay in Testing, and add your Gmail address under Test users.</string>
+    <string name="sync_drive_setup_step4">Google Auth Platform › Clients › Create client › Android: paste the package name and SHA-1 below.</string>
+    <string name="sync_drive_setup_step5">Back here, tap Connect Google Drive and pick your account.</string>
+    <string name="sync_drive_setup_package">Package name</string>
+    <string name="sync_drive_setup_sha1">SHA-1 certificate fingerprint</string>
+    <string name="sync_drive_setup_privacy">Inkwell asks only for access to the files it creates (drive.file). It can\'t read anything else in your Drive, and it never stores your Google password.</string>
+    <string name="sync_drive_copy">Copy %1$s</string>
 
     <string name="sync_section_title">Sync</string>
     <string name="sync_auto_title">Sync automatically</string>
     <string name="sync_auto_on">Notes are copied 30 seconds after you stop writing; transcripts and audio as soon as they\'re ready.</string>
     <string name="sync_auto_off">Copies are made only when you tap Sync now.</string>
     <string name="sync_wifi_title">Upload audio on Wi-Fi only</string>
-    <string name="sync_wifi_subtitle">Recordings wait for an unmetered connection before going to the vault.</string>
+    <string name="sync_wifi_subtitle">Recordings wait for an unmetered connection before going to Google Drive.</string>
     <string name="sync_now">Sync now</string>
     <string name="sync_syncing">Syncing…</string>
     <string name="sync_status_up_to_date">Up to date</string>
     <string name="sync_status_never">Not synced yet</string>
     <string name="sync_status_last">Last sync %1$s</string>
-    <string name="sync_status_off">Nothing leaves this tablet. Pick a folder or the vault above to copy outputs.</string>
+    <string name="sync_status_off">Nothing leaves this tablet. Pick a folder or Google Drive above to copy outputs.</string>
     <plurals name="sync_status_waiting">
         <item quantity="one">%d item waiting</item>
         <item quantity="other">%d items waiting</item>
@@ -70,6 +92,12 @@
     <string name="sync_backup_auto_on">Every day to %1$s</string>
     <string name="sync_backup_auto_off">Off</string>
     <string name="sync_backup_change">Change folder…</string>
+    <string name="sync_backup_auto_last">Last complete automatic backup: %1$s</string>
+    <string name="sync_backup_auto_failed">The last automatic backup failed. It tries again on the next run.</string>
+    <plurals name="sync_backup_auto_skipped">
+        <item quantity="one">The last automatic backup left %d document out because it couldn\'t be read.</item>
+        <item quantity="other">The last automatic backup left %d documents out because they couldn\'t be read.</item>
+    </plurals>
     <string name="sync_backup_explainer">Sync copies your latest notes to the places you chose. Backups are separate snapshots: deleting a note never deletes its backups.</string>
     <string name="sync_restore_confirm_title">Restore from this backup?</string>
     <string name="sync_restore_confirm_body">The documents in the backup are restored into your library. Large backups can take a few minutes.</string>
@@ -77,6 +105,5 @@
     <string name="sync_cancel">Cancel</string>
     <string name="sync_dismiss">Dismiss</string>
     <string name="sync_no_picker">No file picker is available on this device.</string>
-    <string name="sync_password_store_failed">The password couldn\'t be stored securely on this device.</string>
     <string name="sync_backup_schedule_failed">Automatic backup couldn\'t be scheduled.</string>
 </resources>

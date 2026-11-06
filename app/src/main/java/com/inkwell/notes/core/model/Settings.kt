@@ -1,6 +1,12 @@
 package com.inkwell.notes.core.model
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 
 @Serializable
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
@@ -130,7 +136,28 @@ data class OcrPrefs(
 
 /** Where generated outputs are copied in addition to this device (always local-first). */
 @Serializable
-enum class OutputTarget { FOLDER, VAULT }
+enum class OutputTarget {
+    /** A folder chosen with the system picker (Files, SD card, a provider that offers folders). */
+    FOLDER,
+    /** The user's Google Drive, in an "Inkwell" folder Inkwell creates (drive.file access only). */
+    DRIVE,
+}
+
+/**
+ * Reads a set of [OutputTarget] names and skips any it doesn't know, so settings written by an
+ * older version (which had a "VAULT" target) or a newer one never fail to load. A settings file
+ * that fails to load is replaced with defaults, which would silently reset every preference.
+ */
+object OutputTargetSetSerializer : KSerializer<Set<OutputTarget>> {
+    private val names = ListSerializer(String.serializer())
+    override val descriptor: SerialDescriptor = names.descriptor
+
+    override fun serialize(encoder: Encoder, value: Set<OutputTarget>) =
+        encoder.encodeSerializableValue(names, value.sortedBy { it.ordinal }.map { it.name })
+
+    override fun deserialize(decoder: Decoder): Set<OutputTarget> =
+        decoder.decodeSerializableValue(names).mapNotNullTo(LinkedHashSet()) { n -> OutputTarget.entries.firstOrNull { it.name == n } }
+}
 
 @Serializable
 enum class NotesExportFormat { PDF, MARKDOWN, PDF_AND_MARKDOWN }
@@ -138,17 +165,29 @@ enum class NotesExportFormat { PDF, MARKDOWN, PDF_AND_MARKDOWN }
 @Serializable
 data class DestinationPrefs(
     /** Targets for notebooks/notes. Empty = this device only. */
+    @Serializable(with = OutputTargetSetSerializer::class)
     val notes: Set<OutputTarget> = emptySet(),
     /** Targets for meeting/lecture transcripts. */
+    @Serializable(with = OutputTargetSetSerializer::class)
     val transcripts: Set<OutputTarget> = emptySet(),
     /** Targets for raw audio recordings. */
+    @Serializable(with = OutputTargetSetSerializer::class)
     val audio: Set<OutputTarget> = emptySet(),
     val notesFormat: NotesExportFormat = NotesExportFormat.PDF_AND_MARKDOWN,
-    /** SAF tree URI chosen by the user (Drive, Files, SD card...). */
+    /** SAF tree URI chosen by the user (Files, SD card...). */
     val folderUri: String? = null,
     val folderLabel: String? = null,
-    /** Base URL of the private notes vault, e.g. https://yourpitbox.com/notes/<link-id>. */
-    val vaultUrl: String = "",
+    /**
+     * The Google account whose Drive receives copies (its email address), or null when Drive is
+     * not connected. Access itself is held by Google Play services, never by Inkwell.
+     */
+    val driveAccount: String? = null,
+    /**
+     * Opt-in: the "Inkwell" folder in Drive can be opened by anyone who has its link, without
+     * signing in to Google (for a work computer that can't use a personal Google account). Off
+     * by default; turning it off withdraws the link.
+     */
+    val driveShareLink: Boolean = false,
     /** Push automatically after edits settle; otherwise only on "Sync now". */
     val autoSync: Boolean = true,
     val audioOnUnmeteredOnly: Boolean = true,
