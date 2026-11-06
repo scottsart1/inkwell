@@ -3,6 +3,7 @@ package com.inkwell.notes.ai.engine
 import com.inkwell.notes.ai.context.Prompts
 import com.inkwell.notes.ai.net.AiFailure
 import com.inkwell.notes.ai.net.Endpoints
+import com.inkwell.notes.ai.net.LenientJson
 import com.inkwell.notes.ai.net.Redactor
 import com.inkwell.notes.ai.net.SseEvent
 import com.inkwell.notes.ai.net.ErrorMapper
@@ -50,6 +51,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -214,6 +217,18 @@ class AiEngine(
     private suspend fun fetchModelsOrFail(p: AiProviderId, key: String, base: String): List<ModelSpec> = withContext(io) {
         val adapter = providers[p]
         val body = executeForBodyOrFail(p, adapter.modelsRequest(base, key), key, modelId = null)
+        // A 200 that is not a model list (a Wi-Fi sign-in page, a website at a mistyped custom
+        // endpoint) proves nothing about the key: never report it as working or cache it as the list.
+        val json = runCatching { LenientJson.parseToJsonElement(body) }.getOrNull()
+        if (json !is JsonObject && json !is JsonArray) {
+            throw FailureException(
+                AiFailure(
+                    "${p.displayName} did not answer with a model list. Check the custom endpoint URL, " +
+                        "or sign in to the Wi-Fi network you are on, then try again.",
+                    retryable = false, kind = AiFailure.Kind.OTHER,
+                ),
+            )
+        }
         adapter.parseModels(body)
     }
 

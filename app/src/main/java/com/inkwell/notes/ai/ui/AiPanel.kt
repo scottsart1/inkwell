@@ -644,7 +644,7 @@ private fun InputBar(vm: AiPanelViewModel) {
         } else {
             PanelIconButton(
                 Icons.AutoMirrored.Outlined.Send, "Send", { vm.send() },
-                enabled = vm.input.isNotBlank() && !vm.preparing, tint = c.accent,
+                enabled = vm.input.isNotBlank() && !vm.busy, tint = c.accent,
             )
         }
     }
