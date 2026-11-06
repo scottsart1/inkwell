@@ -34,6 +34,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Works out who spoke when in one recording, on the device (engine DEVICE), after it was
@@ -87,10 +88,18 @@ class DiarizationWorker(appContext: Context, params: WorkerParameters) : Corouti
         val embeddings = HashMap<String, FloatArray>(resumed?.second.orEmpty())
         if (resumed == null) withContext(Dispatchers.IO) { service.store.deleteWork(recordingId) }
 
+        // A run the system stopped (the 10-minute limit) or that was replaced stays inside its
+        // native pass until the window is done. Its rescheduled run must not start meanwhile: it
+        // would analyse the same window a second time and read the first run's in-flight mark as
+        // a crash (two of those and the recording is never identified).
+        if (!inProcess.add(recordingId)) return Result.retry()
+
         // A native fault kills the process with nothing to catch, and the job would run (and
         // crash) again on every start: after repeated deaths inside native code, stop here.
         val guard = service.nativeRuns
-        if (!withContext(Dispatchers.IO) { guard.start(recordingId) }) {
+        // Not cancellable: a mark left in flight by a run cancelled right here would later read as a crash.
+        if (!withContext(NonCancellable + Dispatchers.IO) { guard.start(recordingId) }) {
+            inProcess.remove(recordingId)
             Log.e(TAG, "Identification kept stopping the app on this recording; not retried")
             runCatching { discard(service, checkpointFile, recordingId) }
             return failure(R.string.speaker_engine_error_crashed)
@@ -159,6 +168,7 @@ class DiarizationWorker(appContext: Context, params: WorkerParameters) : Corouti
             dispatcher.close()
             // Back from native code (whatever the outcome): this run did not crash the app.
             withContext(NonCancellable + Dispatchers.IO) { guard.finish(recordingId, completed = analysed) }
+            inProcess.remove(recordingId)
         }
 
         val final = checkpoint
@@ -277,6 +287,9 @@ class DiarizationWorker(appContext: Context, params: WorkerParameters) : Corouti
         private const val CHECKPOINT = "speakers.partial.json"
         private const val MAX_ATTEMPTS = 3
         private const val PROGRESS_MS = 500L
+
+        /** Recordings with a run between its native-run mark and the end of its native work, in this process. */
+        private val inProcess: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
         /** The checkpoint of [recordingId]'s identification (turns only; no voice data). */
         fun checkpointFile(files: FileStore, docId: String, recordingId: String): File =
