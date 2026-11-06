@@ -3,6 +3,7 @@ package com.inkwell.notes.export.sync.ui
 import android.content.ActivityNotFoundException
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -79,6 +82,22 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
     val autoBackupPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) vm.enableAutoBackup(uri)
     }
+    val driveConsent = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        vm.onDriveConsent(result.resultCode, result.data)
+    }
+    // Google's account and consent screen, when the view model asks for it.
+    val consent = vm.driveConsent
+    LaunchedEffect(consent) {
+        val pending = if (consent != null) vm.takeDriveConsent() else null
+        if (pending != null) {
+            try {
+                driveConsent.launch(IntentSenderRequest.Builder(pending.intentSender).build())
+            } catch (e: Exception) {
+                vm.onDriveConsentUnavailable()
+            }
+        }
+    }
+    val uriHandler = LocalUriHandler.current
 
     fun launchTree(launcher: androidx.activity.result.ActivityResultLauncher<Uri?>, initial: String?) {
         try {
@@ -102,6 +121,8 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
                         if (target == OutputTarget.FOLDER && on && prefs.folderUri == null) {
                             folderFor = kind.name
                             launchTree(folderPicker, null)
+                        } else if (target == OutputTarget.DRIVE && on && prefs.driveAccount == null) {
+                            vm.connectDrive(enableFor = kind)
                         } else {
                             vm.setTarget(kind, target, on)
                         }
@@ -114,17 +135,22 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
                     onChoose = { folderFor = null; launchTree(folderPicker, prefs.folderUri) },
                     onTest = vm::testFolder,
                 )
-                VaultCard(
+                DriveCard(
                     prefs = prefs,
-                    hasPassword = vm.hasPassword,
-                    check = vm.vaultCheck,
-                    onUrlChanged = vm::onUrlChanged,
-                    onUrlCommit = vm::commitUrl,
-                    onPasswordChanged = vm::onPasswordChanged,
-                    onPasswordCommit = vm::commitPassword,
-                    onForgetPassword = vm::forgetPassword,
-                    onTest = vm::testVault,
-                    onBrowserError = { vm.notice = context.getString(R.string.sync_vault_browser_error) },
+                    check = vm.driveCheck,
+                    setup = vm.driveSetup,
+                    setupOpen = vm.driveNeedsSetup,
+                    onConnect = { vm.connectDrive(enableFor = null) },
+                    onTest = vm::testDrive,
+                    onDisconnect = vm::disconnectDrive,
+                    onOpenDrive = {
+                        try {
+                            uriHandler.openUri(vm.driveUrl())
+                        } catch (e: Exception) {
+                            vm.notice = context.getString(R.string.sync_drive_browser_error)
+                        }
+                    },
+                    onCopied = { vm.notice = null },
                 )
                 SyncCard(
                     prefs = prefs,

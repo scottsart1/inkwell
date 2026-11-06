@@ -41,7 +41,7 @@ fun syncNeeds(items: List<SyncQueueEntity>, prefs: DestinationPrefs): SyncNeeds 
     for (item in items) {
         when (item.target) {
             OutputTarget.FOLDER.name -> local = true
-            OutputTarget.VAULT.name ->
+            OutputTarget.DRIVE.name ->
                 if (item.kind == SyncKind.AUDIO.name && prefs.audioOnUnmeteredOnly) unmetered = true else network = true
         }
     }

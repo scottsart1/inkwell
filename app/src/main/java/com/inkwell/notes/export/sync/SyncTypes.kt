@@ -17,13 +17,13 @@ enum class SyncScope {
     ALL,
     /** Folder copies only: needs no network. */
     FOLDER,
-    /** Audio for the vault only: waits for an unmetered network. */
-    VAULT_AUDIO;
+    /** Audio for Google Drive only: waits for an unmetered network. */
+    DRIVE_AUDIO;
 
     fun accepts(item: com.inkwell.notes.core.storage.db.SyncQueueEntity): Boolean = when (this) {
         ALL -> true
         FOLDER -> item.target == OutputTarget.FOLDER.name
-        VAULT_AUDIO -> item.target == OutputTarget.VAULT.name && item.kind == SyncKind.AUDIO.name
+        DRIVE_AUDIO -> item.target == OutputTarget.DRIVE.name && item.kind == SyncKind.AUDIO.name
     }
 }
 
@@ -57,6 +57,17 @@ fun DestinationPrefs.withoutFolder(): DestinationPrefs = copy(
     folderLabel = null,
 )
 
+/** Removes Google Drive everywhere (disconnected). */
+fun DestinationPrefs.withoutDrive(): DestinationPrefs = copy(
+    notes = notes - OutputTarget.DRIVE,
+    transcripts = transcripts - OutputTarget.DRIVE,
+    audio = audio - OutputTarget.DRIVE,
+    driveAccount = null,
+)
+
+/** True when any output type goes to [target]. */
+fun DestinationPrefs.uses(target: OutputTarget): Boolean = target in notes || target in transcripts || target in audio
+
 val NotesExportFormat.includesPdf: Boolean get() = this != NotesExportFormat.MARKDOWN
 val NotesExportFormat.includesMarkdown: Boolean get() = this != NotesExportFormat.PDF
 
@@ -85,18 +96,16 @@ interface SyncSource {
 interface SyncStateStore {
     var lastSuccessAt: Long
     var lastError: String?
-    var vaultLockedUntil: Long
-    /**
-     * When the vault last refused the stored password (epoch ms; 0 = never). Vault uploads pause
-     * for [SyncEngine.CREDENTIALS_HOLD_MS] after that, or until the credentials change, so the
-     * app's own retries never trip the vault's failed-login lockout against the user.
-     */
-    var vaultCredentialsRefusedAt: Long
-        get() = 0L
-        set(@Suppress("UNUSED_PARAMETER") value) {}
+    /** Id of the "Inkwell" folder in Google Drive (null until created or after disconnecting). */
+    var driveRootId: String?
     /** Where the document's files were last written inside the folder destination. */
     fun folderLocation(docId: String): List<String>?
     fun setFolderLocation(docId: String, segments: List<String>?)
+    /** Id of the document's own folder in Google Drive. */
+    fun driveDocFolder(docId: String): String?
+    fun setDriveDocFolder(docId: String, folderId: String?)
+    /** Forgets every Drive id (another account, or Drive disconnected). */
+    fun clearDrive()
 }
 
 interface NetworkState {
@@ -107,11 +116,19 @@ interface NetworkState {
 class InMemorySyncState : SyncStateStore {
     override var lastSuccessAt: Long = 0
     override var lastError: String? = null
-    override var vaultLockedUntil: Long = 0
-    override var vaultCredentialsRefusedAt: Long = 0
+    override var driveRootId: String? = null
     private val locations = HashMap<String, List<String>>()
+    private val driveFolders = HashMap<String, String>()
     override fun folderLocation(docId: String): List<String>? = synchronized(locations) { locations[docId] }
     override fun setFolderLocation(docId: String, segments: List<String>?) {
         synchronized(locations) { if (segments == null) locations.remove(docId) else locations[docId] = segments }
+    }
+    override fun driveDocFolder(docId: String): String? = synchronized(driveFolders) { driveFolders[docId] }
+    override fun setDriveDocFolder(docId: String, folderId: String?) {
+        synchronized(driveFolders) { if (folderId == null) driveFolders.remove(docId) else driveFolders[docId] = folderId }
+    }
+    override fun clearDrive() {
+        driveRootId = null
+        synchronized(driveFolders) { driveFolders.clear() }
     }
 }

@@ -26,26 +26,27 @@ import java.io.IOException
 data class SyncRunReport(
     val succeeded: Int = 0,
     val failed: Int = 0,
-    /** Items left waiting for a condition (network, unmetered network, vault settings). */
+    /** Items left waiting for a condition (network, unmetered network, Drive connection). */
     val deferred: Int = 0,
     /** A retryable failure happened: run again later with backoff. */
     val retryLater: Boolean = false,
-    /** The vault is locked until this time (epoch ms); 0 = not locked. */
-    val vaultLockedUntil: Long = 0,
+    /** Google Drive asked Inkwell to slow down: wait a few minutes before the next run. */
+    val slowDown: Boolean = false,
     /** Most relevant error of this run, user-readable; null when everything went through. */
     val error: String? = null,
 )
 
 /**
  * Processes `sync_queue`: copies notes (PDF/Markdown), transcripts and audio to the folder and/or
- * vault destinations. Local data is never changed except DocumentMeta.lastSyncedAt; deleting a
- * document never deletes its copies. One run at a time per process.
+ * Google Drive destinations. Local data is never changed except DocumentMeta.lastSyncedAt;
+ * deleting a document never deletes its copies. One run at a time per process.
  */
 class SyncEngine(
     private val queue: () -> SyncQueueDao,
     private val source: SyncSource,
     private val prefs: () -> DestinationPrefs,
-    private val vaultClient: (VaultEndpoint) -> VaultClient,
+    /** A Drive client for the connected account (the email in [DestinationPrefs.driveAccount]). */
+    private val driveClient: (account: String) -> DriveApi,
     private val folders: FolderAccess,
     private val network: NetworkState,
     private val state: SyncStateStore,
@@ -53,8 +54,6 @@ class SyncEngine(
     private val onFolderRevoked: suspend () -> Unit,
     private val clock: () -> Long = System::currentTimeMillis,
     private val io: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
-    /** Resolves the saved vault link (HTTPS only); replaceable for tests against a local server. */
-    private val endpointFor: (String) -> VaultEndpoint? = VaultUrl::endpointOrNull,
 ) {
     private val runLock = Mutex()
     private val _running = MutableStateFlow(false)
@@ -170,7 +169,7 @@ class SyncEngine(
             failed = ctx.failed,
             deferred = ctx.deferred,
             retryLater = ctx.retryLater,
-            vaultLockedUntil = state.vaultLockedUntil.takeIf { it > now } ?: 0,
+            slowDown = ctx.slowDown,
             error = error,
         )
     }
@@ -184,10 +183,10 @@ class SyncEngine(
             return
         }
         when (target) {
-            OutputTarget.VAULT -> {
+            OutputTarget.DRIVE -> {
                 if (!network.isOnline()) return ctx.defer()
                 if (kind == SyncKind.AUDIO && ctx.prefs.audioOnUnmeteredOnly && !network.isUnmetered()) return ctx.defer()
-                if (ctx.vaultBlocked != null) return ctx.defer()
+                if (ctx.driveBlocked != null) return ctx.defer()
             }
             OutputTarget.FOLDER -> if (ctx.folderBlocked != null) return ctx.defer()
         }
@@ -209,8 +208,8 @@ class SyncEngine(
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (e: VaultException) {
-            onVaultError(item, e, ctx)
+        } catch (e: DriveException) {
+            onDriveError(item, e, ctx)
         } catch (e: FolderRevokedException) {
             ctx.folderBlocked = e
             ctx.failed++
@@ -245,19 +244,21 @@ class SyncEngine(
         }
     }
 
-    private suspend fun onVaultError(item: SyncQueueEntity, e: VaultException, ctx: RunContext) {
-        Log.w(TAG, "Vault ${item.kind} failed: ${e.javaClass.simpleName}")
+    private suspend fun onDriveError(item: SyncQueueEntity, e: DriveException, ctx: RunContext) {
+        Log.w(TAG, "Drive ${item.kind} failed: ${e.javaClass.simpleName}")
         ctx.error = e.message
-        if (e is VaultException.Locked) state.vaultLockedUntil = clock() + e.retryAfterSeconds * 1000
-        // The vault counts failed logins per address and locks it after a few: once the stored
-        // password was refused, stop trying until it changes (or the lockout window has passed).
-        if (e is VaultException.WrongPassword && !ctx.heldForCredentials) state.vaultCredentialsRefusedAt = clock()
-        if (e.blocksVault) {
-            // Settings or connectivity problem: keep the item, stop vault work for this run.
-            ctx.vaultBlocked = e
+        if (e is DriveException.NotFound) {
+            // A folder was deleted in Drive while Inkwell used it: find or recreate it next time.
+            ctx.driveLayout?.forgetDocument(item.documentId)
+            ctx.driveLayout?.reset()
+        }
+        if (e.blocksDrive) {
+            // Account, setup or connectivity problem: keep the item, stop Drive work for this run.
+            ctx.driveBlocked = e
             ctx.deferred++
             if (e.retryable) ctx.retryLater = true
-            val attempts = if (e is VaultException.Unreachable || e is VaultException.InsecureConnection) item.attempts + 1 else item.attempts
+            if (e is DriveException.RateLimited) ctx.slowDown = true
+            val attempts = if (e is DriveException.Unreachable) item.attempts + 1 else item.attempts
             finish(item, SyncItemStatus.PENDING, attempts, e.message)
             return
         }
@@ -274,7 +275,7 @@ class SyncEngine(
             SyncKind.AUDIO.name -> "the recording"
             else -> "the notes"
         }
-        val where = if (item.target == OutputTarget.FOLDER.name) "to the folder" else "to the vault"
+        val where = if (item.target == OutputTarget.FOLDER.name) "to the folder" else "to Google Drive"
         val reason = when (e) {
             is IOException -> e.message?.takeIf { it.isNotBlank() && it.length < 200 } ?: "a file couldn't be written"
             is OutOfMemoryError -> "not enough memory"
@@ -296,21 +297,23 @@ class SyncEngine(
         // Edits made while this copy is being made must count as unsynced: stamp the start time.
         val startedAt = clock()
         when (target) {
-            OutputTarget.VAULT -> {
-                val client = ctx.vault()
-                val id = VaultNames.docId(doc.id)
-                val markdown = ctx.markdown(doc.id)
-                client.putDoc(id, SyncPayloads.docUpsert(doc, source.folderPath(doc.folderId), markdown))
-                ctx.knownVaultDocs?.add(id)
-                if (format.includesPdf) client.putFile(id, VaultNames.NOTES_PDF, ctx.pdf(doc.id), VaultNames.MIME_PDF)
-                if (format.includesMarkdown) client.putBytes(id, VaultNames.NOTES_MD, markdown.encodeToByteArray(), VaultNames.MIME_MARKDOWN)
+            OutputTarget.DRIVE -> {
+                val drive = ctx.drive()
+                val dir = drive.documentFolder(doc, source.folderNames(doc.folderId))
+                if (format.includesPdf) {
+                    drive.put(dir, DriveNames.NOTES_PDF_KEY, FolderNaming.NOTES_PDF, MIME_PDF, DriveContent.FromFile(ctx.pdf(doc.id)))
+                }
+                if (format.includesMarkdown) {
+                    val bytes = ctx.markdown(doc.id).encodeToByteArray()
+                    drive.put(dir, DriveNames.NOTES_MD_KEY, FolderNaming.NOTES_MD, MIME_MARKDOWN, DriveContent.Bytes(bytes))
+                }
             }
             OutputTarget.FOLDER -> {
                 val root = ctx.folderRoot()
                 val place = documentDir(root, doc, ctx)
                 if (format.includesPdf) {
                     val pdf = ctx.pdf(doc.id)
-                    FolderWriter.writeFile(place.dir, FolderNaming.NOTES_PDF, VaultNames.MIME_PDF) { out -> pdf.inputStream().use { it.copyTo(out) } }
+                    FolderWriter.writeFile(place.dir, FolderNaming.NOTES_PDF, MIME_PDF) { out -> pdf.inputStream().use { it.copyTo(out) } }
                 }
                 if (format.includesMarkdown) {
                     val bytes = ctx.markdown(doc.id).encodeToByteArray()
@@ -329,10 +332,19 @@ class SyncEngine(
         val doc = source.document(rec.documentId)?.takeIf { it.trashedAt == null } ?: return Outcome.Skipped
         val transcript = source.transcript(recId)?.takeIf { it.segments.isNotEmpty() } ?: return Outcome.Skipped
         when (target) {
-            OutputTarget.VAULT -> {
-                val client = ctx.vault()
-                val id = ensureVaultDoc(client, doc, ctx)
-                client.putTranscript(id, VaultNames.recordingId(rec.id), SyncPayloads.transcriptUpsert(rec, transcript.segments, transcript.source))
+            OutputTarget.DRIVE -> {
+                val drive = ctx.drive()
+                val dir = drive.documentFolder(doc, source.folderNames(doc.folderId))
+                val stem = FolderNaming.recordingStem(rec, source.recordings(doc.id))
+                val html = SyncPayloads.transcriptHtml(rec, transcript.segments, doc.title).encodeToByteArray()
+                val key = DriveNames.transcriptKey(rec.id)
+                try {
+                    drive.put(dir, key, DriveNames.transcriptDocName(stem), DriveNames.MIME_HTML, DriveContent.Bytes(html), convertTo = DriveNames.MIME_GOOGLE_DOC)
+                } catch (e: DriveException.Rejected) {
+                    // Drive wouldn't make a Google Doc of it: keep the transcript as a Markdown file instead.
+                    val md = SyncPayloads.transcriptMarkdown(rec, transcript.segments, doc.title).encodeToByteArray()
+                    drive.put(dir, key, FolderNaming.transcriptFile(stem), MIME_MARKDOWN, DriveContent.Bytes(md))
+                }
             }
             OutputTarget.FOLDER -> {
                 val place = documentDir(ctx.folderRoot(), doc, ctx)
@@ -352,41 +364,21 @@ class SyncEngine(
         if (rec.segmentFiles.isEmpty()) return Outcome.Skipped
         val doc = source.document(rec.documentId)?.takeIf { it.trashedAt == null } ?: return Outcome.Skipped
         when (target) {
-            OutputTarget.VAULT -> {
-                val client = ctx.vault()
-                val id = ensureVaultDoc(client, doc, ctx)
-                client.putFile(id, VaultNames.audioFile(rec.id), ctx.audio(rec.id), VaultNames.MIME_AUDIO)
+            OutputTarget.DRIVE -> {
+                val drive = ctx.drive()
+                val dir = drive.documentFolder(doc, source.folderNames(doc.folderId))
+                val stem = FolderNaming.recordingStem(rec, source.recordings(doc.id))
+                drive.put(dir, DriveNames.audioKey(rec.id), FolderNaming.audioFile(stem), MIME_AUDIO, DriveContent.FromFile(ctx.audio(rec.id)))
             }
             OutputTarget.FOLDER -> {
                 val place = documentDir(ctx.folderRoot(), doc, ctx)
                 val stem = FolderNaming.recordingStem(rec, source.recordings(doc.id))
                 val file = ctx.audio(rec.id)
-                FolderWriter.writeFile(place.dir, FolderNaming.audioFile(stem), VaultNames.MIME_AUDIO) { out -> file.inputStream().use { it.copyTo(out) } }
+                FolderWriter.writeFile(place.dir, FolderNaming.audioFile(stem), MIME_AUDIO) { out -> file.inputStream().use { it.copyTo(out) } }
                 place.finishMove(doc, SyncKind.AUDIO, rec.id)
             }
         }
         return Outcome.Done
-    }
-
-    /**
-     * Makes sure the vault has a document row for [doc] before a transcript or audio file is
-     * attached, so the vault shows the real title. Uses the full notes when notes go to the vault
-     * too; otherwise metadata only. Never overwrites a document the vault already has.
-     */
-    private suspend fun ensureVaultDoc(client: VaultClient, doc: DocumentMeta, ctx: RunContext): String {
-        val id = VaultNames.docId(doc.id)
-        val known = ctx.knownVaultDocs ?: client.listDocIds().toHashSet().also { ctx.knownVaultDocs = it }
-        if (id in known) return id
-        // The vault lists at most VAULT_LIST_CAP documents; beyond that, absence from the list
-        // proves nothing, and re-creating the doc metadata-only would wipe its stored notes.
-        if (known.size >= VAULT_LIST_CAP && client.hasDoc(id)) {
-            known += id
-            return id
-        }
-        val markdown = if (OutputTarget.VAULT in ctx.prefs.notes) ctx.markdown(doc.id) else null
-        client.putDoc(id, SyncPayloads.docUpsert(doc, source.folderPath(doc.folderId), markdown))
-        known += id
-        return id
     }
 
     // ------------------------------------------------------------------ folder placement
@@ -444,13 +436,13 @@ class SyncEngine(
         var retryLater = false
         var lastSuccessAt = 0L
         var error: String? = null
-        var vaultBlocked: VaultException? = null
-        /** True when this run's vault error came from the credentials hold, not from the vault. */
-        var heldForCredentials = false
+        var driveBlocked: DriveException? = null
+        /** Google asked to slow down: the next background run waits a little. */
+        var slowDown = false
         var folderBlocked: Exception? = null
-        var knownVaultDocs: HashSet<String>? = null
         val placements = HashMap<String, Placement>()
-        private var client: VaultClient? = null
+        var driveLayout: DriveLayout? = null
+            private set
         private var root: FolderNode? = null
         private var markdownCache: Pair<String, String>? = null
         val exports = ExportCache(source)
@@ -467,19 +459,11 @@ class SyncEngine(
             deferred++
         }
 
-        fun vault(): VaultClient {
-            vaultBlocked?.let { throw it }
-            val now = clock()
-            val lockedUntil = state.vaultLockedUntil
-            if (lockedUntil > now) throw VaultException.Locked((lockedUntil - now + 999) / 1000)
-            val refusedAt = state.vaultCredentialsRefusedAt
-            if (refusedAt > 0 && now - refusedAt < CREDENTIALS_HOLD_MS) {
-                heldForCredentials = true
-                throw VaultException.WrongPassword()
-            }
-            client?.let { return it }
-            val endpoint = endpointFor(prefs.vaultUrl) ?: throw VaultException.MissingLink()
-            return vaultClient(endpoint).also { client = it }
+        fun drive(): DriveLayout {
+            driveBlocked?.let { throw it }
+            driveLayout?.let { return it }
+            val account = prefs.driveAccount?.takeIf { it.isNotBlank() } ?: throw DriveException.NotConnected()
+            return DriveLayout(driveClient(account), state).also { driveLayout = it }
         }
 
         fun folderRoot(): FolderNode {
@@ -492,12 +476,11 @@ class SyncEngine(
     private enum class Outcome { Done, Skipped, NotReady }
 
     companion object {
-        /** Maximum rows the vault returns from GET api/docs (see web/notes-vault/src/api.ts). */
-        internal const val VAULT_LIST_CAP = 2000
         private const val TAG = "InkwellSync"
         const val MAX_ATTEMPTS = 8
-        /** After the vault refused the password, no login is attempted for this long (the vault's lockout window). */
-        const val CREDENTIALS_HOLD_MS = 15L * 60 * 1000
+        const val MIME_PDF = "application/pdf"
+        const val MIME_MARKDOWN = "text/markdown"
+        const val MIME_AUDIO = "audio/mp4"
         private const val QUERY_LIMIT = 5000
         /** A document counts as changed when edited more than this after its last copy. */
         const val CHANGE_TOLERANCE_MS = 2_000L

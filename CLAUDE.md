@@ -35,11 +35,10 @@ so it is unit-testable without Android.
 | `speakers` | Who spoke when (on-device sherpa-onnx or OpenAI diarize), people, voiceprints, naming | `SpeakerContracts.kt` |
 | `ocr` + `search` | ML Kit OCR + handwriting recognition, FTS index, indexing pipeline, search screen | `ocr/OcrContracts.kt`, `search/SearchScreen.kt` |
 | `pdf` | Import, render, text extraction, merge/split/extract, scanning | `PdfService.kt` |
-| `export` | Export formats, thumbnails, backup, sync to folder / notes vault, storage settings UI | `ExportContracts.kt`, `ui/ExportUi.kt` |
+| `export` | Export formats, thumbnails, backup, sync to a folder / Google Drive, storage settings UI | `ExportContracts.kt`, `ui/ExportUi.kt` |
 | `whiteboard`, `typed` | Infinite canvas screen, typed document editor | `WhiteboardScreen.kt`, `TypedDocumentScreen.kt` |
 | `settings` | Settings screens, app lock | `SettingsScreen.kt`, `AppLock.kt` |
 | `ui/theme` | Design tokens (`Inkwell.colors`, `Dimens`, Figtree type) | `Theme.kt` |
-| `web/notes-vault` | Cloudflare Worker for yourpitbox.com/notes | `docs/VAULT_API.md` |
 
 Rules for contracts:
 
@@ -66,8 +65,9 @@ Rules for contracts:
 - AI output never silently overwrites notes; insertion is always an explicit user action.
 - Long work (OCR, AI, export, sync, transcription) runs off the main thread / in WorkManager
   and never blocks writing.
-- API keys and the vault password live only in `SecretStore`; never log them, never put them
-  in settings JSON, exports, or shared files.
+- API keys live only in `SecretStore`; never log them, never put them in settings JSON,
+  exports, or shared files. Google Drive access tokens come from Google Play services on demand
+  and are never stored by Inkwell (see `docs/GOOGLE_DRIVE.md`).
 - Voiceprints (speaker embeddings, reference clips) are biometric: encrypted, under
   `noBackupFilesDir`, never in the database, backups, exports or sync. Only names travel.
 

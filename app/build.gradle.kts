@@ -147,6 +147,8 @@ dependencies {
     implementation(libs.mlkit.digital.ink)
     implementation(libs.mlkit.document.scanner)
     implementation(libs.sherpa.onnx)
+    // Google Drive sync: Play services hands out drive.file access tokens (no password or token is stored by Inkwell).
+    implementation(libs.play.services.auth)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

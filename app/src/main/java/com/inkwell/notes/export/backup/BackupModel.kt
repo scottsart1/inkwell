@@ -10,7 +10,7 @@ import java.util.Locale
 
 /**
  * library.json of a backup: the folder tree, where each document lives, and the user's
- * preferences without anything device-specific or secret (API keys and the vault password
+ * preferences without anything device-specific or secret (API keys
  * live only in the keystore and are never read here).
  */
 @Serializable
@@ -104,7 +104,7 @@ object BackupNaming {
 /** Removes what must never leave the device or does not carry over to another one. */
 object SettingsSanitizer {
     fun forBackup(s: AppSettings): AppSettings = s.copy(
-        destinations = s.destinations.copy(folderUri = null, folderLabel = null, vaultUrl = ""),
+        destinations = s.destinations.copy(folderUri = null, folderLabel = null, driveAccount = null),
         ai = s.ai.copy(providers = s.ai.providers.map { it.copy(validatedAt = 0) }),
     )
 

@@ -13,7 +13,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Credentials (AI API keys, vault password and session) encrypted with an AES-256-GCM key
+ * Credentials (AI API keys) encrypted with an AES-256-GCM key
  * that lives in the Android Keystore and never leaves it. Values are stored only as
  * ciphertext in a private preferences file that is excluded from device backup.
  *
@@ -60,7 +60,7 @@ class SecretStore(context: Context) {
         } catch (e: Exception) {
             // Keystore hiccups (KeyStoreException, ProviderException, UnrecoverableKeyException
             // while the device is locked...) are transient: keep the ciphertext for the next call
-            // instead of silently deleting the user's API key or vault password.
+            // instead of silently deleting the user's API key.
             Log.w(TAG, "Secret '$name' temporarily unavailable: ${e.javaClass.simpleName}")
             null
         }
@@ -94,7 +94,8 @@ class SecretStore(context: Context) {
         private const val IV_BYTES = 12
 
         fun aiKey(provider: com.inkwell.notes.core.model.AiProviderId) = "ai.key.${provider.name}"
-        const val VAULT_PASSWORD = "vault.password"
-        const val VAULT_SESSION = "vault.session"
+
+        /** Left behind by versions with the notes vault (removed); deleted at start-up. */
+        val LEGACY_VAULT_SECRETS = listOf("vault.password", "vault.session")
     }
 }

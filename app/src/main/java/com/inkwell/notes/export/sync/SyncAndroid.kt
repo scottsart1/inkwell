@@ -8,7 +8,6 @@ import android.util.Log
 import com.inkwell.notes.app.AppGraph
 import com.inkwell.notes.core.model.DocumentMeta
 import com.inkwell.notes.core.model.Recording
-import com.inkwell.notes.core.settings.SecretStore
 import com.inkwell.notes.export.ExportFormat
 import com.inkwell.notes.export.ExportOptions
 import java.io.File
@@ -78,6 +77,7 @@ internal class GraphSyncSource(private val graph: AppGraph) : SyncSource {
 internal class PrefsSyncStateStore(context: Context) : SyncStateStore {
     private val prefs = context.getSharedPreferences("inkwell_sync", Context.MODE_PRIVATE)
     private val locations = context.getSharedPreferences("inkwell_sync_locations", Context.MODE_PRIVATE)
+    private val driveFolders = context.getSharedPreferences("inkwell_sync_drive", Context.MODE_PRIVATE)
 
     override var lastSuccessAt: Long
         get() = prefs.getLong(KEY_LAST_SUCCESS, 0)
@@ -87,13 +87,9 @@ internal class PrefsSyncStateStore(context: Context) : SyncStateStore {
         get() = prefs.getString(KEY_LAST_ERROR, null)
         set(value) = prefs.edit().apply { if (value == null) remove(KEY_LAST_ERROR) else putString(KEY_LAST_ERROR, value) }.apply()
 
-    override var vaultLockedUntil: Long
-        get() = prefs.getLong(KEY_LOCKED_UNTIL, 0)
-        set(value) = prefs.edit().putLong(KEY_LOCKED_UNTIL, value).apply()
-
-    override var vaultCredentialsRefusedAt: Long
-        get() = prefs.getLong(KEY_REFUSED_AT, 0)
-        set(value) = prefs.edit().putLong(KEY_REFUSED_AT, value).apply()
+    override var driveRootId: String?
+        get() = prefs.getString(KEY_DRIVE_ROOT, null)
+        set(value) = prefs.edit().apply { if (value == null) remove(KEY_DRIVE_ROOT) else putString(KEY_DRIVE_ROOT, value) }.apply()
 
     override fun folderLocation(docId: String): List<String>? =
         locations.getString(docId, null)?.split(SEP)?.filter { it.isNotEmpty() }?.takeIf { it.isNotEmpty() }
@@ -104,11 +100,30 @@ internal class PrefsSyncStateStore(context: Context) : SyncStateStore {
 
     fun clearAllLocations() = locations.edit().clear().apply()
 
+    override fun driveDocFolder(docId: String): String? = driveFolders.getString(docId, null)
+
+    override fun setDriveDocFolder(docId: String, folderId: String?) {
+        driveFolders.edit().apply { if (folderId == null) remove(docId) else putString(docId, folderId) }.apply()
+    }
+
+    override fun clearDrive() {
+        driveRootId = null
+        driveFolders.edit().clear().apply()
+    }
+
+    /** Drops what older versions kept about the notes vault. */
+    fun forgetLegacyVault() {
+        if (prefs.contains(LEGACY_LOCKED_UNTIL) || prefs.contains(LEGACY_REFUSED_AT)) {
+            prefs.edit().remove(LEGACY_LOCKED_UNTIL).remove(LEGACY_REFUSED_AT).apply()
+        }
+    }
+
     private companion object {
         const val KEY_LAST_SUCCESS = "lastSuccessAt"
         const val KEY_LAST_ERROR = "lastError"
-        const val KEY_LOCKED_UNTIL = "vaultLockedUntil"
-        const val KEY_REFUSED_AT = "vaultCredentialsRefusedAt"
+        const val KEY_DRIVE_ROOT = "driveRootId"
+        const val LEGACY_LOCKED_UNTIL = "vaultLockedUntil"
+        const val LEGACY_REFUSED_AT = "vaultCredentialsRefusedAt"
         const val SEP = "\u001F"
     }
 }
@@ -124,16 +139,5 @@ internal class AndroidNetworkState(context: Context) : NetworkState {
         val c = caps() ?: return false
         if (c.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) return true
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && c.hasCapability(NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED)
-    }
-}
-
-/** Vault password and the cached session token, both in [SecretStore] (Keystore-encrypted). */
-internal class SecretVaultCredentials(private val secrets: SecretStore, private val endpoint: VaultEndpoint) : VaultCredentials {
-    override fun password(): String? = secrets.get(SecretStore.VAULT_PASSWORD)
-
-    override fun session(): VaultSession? = VaultSessionCodec.decode(secrets.get(SecretStore.VAULT_SESSION), endpoint.fingerprint)
-
-    override fun saveSession(session: VaultSession?) {
-        secrets.put(SecretStore.VAULT_SESSION, session?.let { VaultSessionCodec.encode(it, endpoint.fingerprint) })
     }
 }

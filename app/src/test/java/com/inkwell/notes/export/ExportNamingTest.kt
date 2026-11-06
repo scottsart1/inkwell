@@ -111,11 +111,11 @@ class ExportNamingTest {
     @Test fun settingsLoseDeviceSpecificDestinations() {
         val s = AppSettings(
             theme = ThemeMode.DARK,
-            destinations = DestinationPrefs(folderUri = "content://tree/abc", folderLabel = "Drive", vaultUrl = "https://yourpitbox.com/notes/secret-link"),
+            destinations = DestinationPrefs(folderUri = "content://tree/abc", folderLabel = "Drive", driveAccount = "me@example.com"),
         )
         val clean = SettingsSanitizer.forBackup(s)
         assertNull(clean.destinations.folderUri)
-        assertEquals("", clean.destinations.vaultUrl)
+        assertNull("the Google account stays on this device", clean.destinations.driveAccount)
         assertEquals(ThemeMode.DARK, clean.theme)
 
         val current = AppSettings(privacy = PrivacyPrefs(appLock = true), destinations = DestinationPrefs(folderLabel = "Mine"))

@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Background pass over the sync queue. The same worker runs under three unique names with their
- * own network constraint and [SyncScope], so folder copies never wait for a network, vault uploads
+ * own network constraint and [SyncScope], so folder copies never wait for a network, Drive uploads
  * wait for any connection, and large audio waits for an unmetered one when the user asked for that.
  */
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
@@ -51,7 +51,7 @@ internal class SyncScheduler(private val context: Context) {
     fun schedule(needs: SyncNeeds) {
         if (needs.local) enqueue(WORK_LOCAL, SyncScope.FOLDER, null, 0)
         if (needs.network) enqueue(WORK_MAIN, SyncScope.ALL, NetworkType.CONNECTED, 0)
-        if (needs.unmetered) enqueue(WORK_AUDIO, SyncScope.VAULT_AUDIO, NetworkType.UNMETERED, 0)
+        if (needs.unmetered) enqueue(WORK_AUDIO, SyncScope.DRIVE_AUDIO, NetworkType.UNMETERED, 0)
     }
 
     /** Drops scheduled background runs (automatic sync switched off); queued items stay for "Sync now". */
@@ -64,7 +64,7 @@ internal class SyncScheduler(private val context: Context) {
         }
     }
 
-    /** One run after [delayMs] (e.g. when a vault lockout ends). */
+    /** One run after [delayMs] (e.g. when Google Drive asked Inkwell to slow down). */
     fun scheduleAfter(delayMs: Long) {
         enqueue(WORK_LATER, SyncScope.ALL, NetworkType.CONNECTED, delayMs.coerceAtLeast(1_000), ExistingWorkPolicy.REPLACE)
     }

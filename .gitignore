@@ -9,7 +9,5 @@ build/
 .cxx
 .kotlin/
 node_modules/
-web/notes-vault/.wrangler/
-web/notes-vault/.dev.vars
 *.log
 .claude/worktrees/

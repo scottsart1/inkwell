@@ -72,8 +72,8 @@ data class SyncStatus(
 
 /**
  * Copies outputs to the destinations the user chose for each output type (notes,
- * transcripts, audio): a SAF folder (Drive, Files, SD card) and/or the private notes vault
- * on yourpitbox.com. Local storage always remains the source of truth (local-first).
+ * transcripts, audio): a SAF folder (Files, SD card) and/or the user's Google Drive, so they can
+ * be read on another computer. Local storage always remains the source of truth (local-first).
  */
 interface SyncManager {
     val status: StateFlow<SyncStatus>
@@ -82,8 +82,8 @@ interface SyncManager {
     fun onRecordingFinished(docId: String, recordingId: String)
     fun onDocumentDeleted(docId: String)
     suspend fun syncNow(): SyncStatus
-    /** Checks URL + password against the vault; returns a human-readable result. */
-    suspend fun testVault(url: String, password: String): Result<String>
+    /** Checks that Google Drive accepts uploads for the connected account; returns a human-readable result. */
+    suspend fun testDrive(): Result<String>
     suspend fun testFolder(treeUri: Uri): Result<String>
 }
 

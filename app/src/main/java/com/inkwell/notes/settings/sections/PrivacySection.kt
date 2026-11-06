@@ -207,7 +207,7 @@ internal fun PrivacySection(s: AppSettings, actions: SettingsActions) {
                 PrivacyPoint(
                     Icons.Outlined.Key,
                     "Keys stay locked",
-                    "AI keys and your vault password are encrypted with a key held in the Android Keystore. They are never written to settings, exports or backups.",
+                    "AI keys are encrypted with a key held in the Android Keystore. They are never written to settings, exports or backups. Google Drive access is held by Google Play services; Inkwell never sees your Google password.",
                 )
                 PrivacyPoint(
                     Icons.Outlined.Visibility,
