@@ -121,7 +121,10 @@ internal class DocumentAssembler(
         val pdf = if (compaction.keep.isEmpty()) null else buildSubset(compaction.keep)
         try {
             val created = try {
-                library.createDocument(kind, folderId, originalName = title)
+                // Not cancellable on its own: a document committed just as the operation is
+                // cancelled would stay behind empty; populate() notices the cancellation and
+                // the handler below removes it.
+                withContext(NonCancellable) { library.createDocument(kind, folderId, originalName = title) }
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {

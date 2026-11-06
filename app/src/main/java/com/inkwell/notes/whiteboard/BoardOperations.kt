@@ -26,6 +26,7 @@ import com.inkwell.notes.ink.render.PageRenderer
 import com.inkwell.notes.whiteboard.kit.DocAssets
 import com.inkwell.notes.whiteboard.kit.FileSharing
 import com.inkwell.notes.whiteboard.kit.UiMessage
+import com.inkwell.notes.whiteboard.logic.BoardAnchors
 import com.inkwell.notes.whiteboard.logic.BoardGeometry
 import com.inkwell.notes.whiteboard.logic.Box
 import com.inkwell.notes.whiteboard.logic.CropMath
@@ -183,7 +184,8 @@ class BoardOperations(private val c: WhiteboardController) {
         val images = HashMap<String, Bitmap?>()
         for (im in content.images) {
             if (im.assetId in images) continue
-            if (!Box(im.x, im.y, im.x + im.width, im.y + im.height).intersects(region)) continue
+            // A rotated image reaches past its unrotated box.
+            if (!BoardAnchors.rotated(Box(im.x, im.y, im.x + im.width, im.y + im.height), im.rotation).intersects(region)) continue
             val need = (max(im.width, im.height) * scale).roundToInt().coerceIn(64, 4096)
             images[im.assetId] = DocAssets.decodeAsset(graph, docId, im.assetId, maxSide = need)
         }

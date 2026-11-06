@@ -140,7 +140,10 @@ class PdfServiceImpl(private val graph: AppGraph) : PdfService {
     private suspend fun importPreparedFile(file: File, folderId: String?, title: String?): DocumentMeta {
         val sizes = importer.prepare(file)
         val doc = try {
-            library.createDocument(DocKind.PDF, folderId, originalName = title)
+            // Not cancellable on its own: a document committed just as the import is cancelled
+            // would otherwise stay in the library without pages. Cancellation is noticed by the
+            // next step, which removes the document again.
+            withContext(NonCancellable) { library.createDocument(DocKind.PDF, folderId, originalName = title) }
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
