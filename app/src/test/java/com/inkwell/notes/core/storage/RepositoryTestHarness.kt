@@ -20,12 +20,17 @@ class RecordingHooks : LibraryHooks {
     val recordingsDeleted = ArrayList<String>()
     var pdfPng: ByteArray? = null
     val pdfRenders = ArrayList<Triple<String, Int, Pair<Int, Int>>>()
+    /** Runs right after a document is deleted, to act "meanwhile" in multi-document operations. */
+    var onDocumentDeleted: (String) -> Unit = {}
 
     override fun documentMetaChanged(docId: String) { metaChanged += docId }
     override fun documentRenamed(docId: String) { renamed += docId }
     override fun pagesNeedIndexing(docId: String, pageIds: List<String>) { needIndexing += docId to pageIds }
     override fun coverChanged(docId: String) { coverChanged += docId }
-    override fun documentDeleted(docId: String) { deleted += docId }
+    override fun documentDeleted(docId: String) {
+        deleted += docId
+        onDocumentDeleted(docId)
+    }
     override fun recordingsDeleted(docId: String, recordingIds: List<String>) { recordingsDeleted += recordingIds }
     override suspend fun renderPdfPagePng(docId: String, pdfPageIndex: Int, widthPx: Int, heightPx: Int): ByteArray? {
         pdfRenders += Triple(docId, pdfPageIndex, widthPx to heightPx)

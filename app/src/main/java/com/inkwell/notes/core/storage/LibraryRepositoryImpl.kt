@@ -466,12 +466,26 @@ class LibraryRepositoryImpl internal constructor(
     }
 
     override suspend fun deletePermanently(id: String) {
+        delete(id, onlyIfTrashed = false)
+    }
+
+    /**
+     * [deletePermanently]; with [onlyIfTrashed] (emptying and purging the trash, which work from a
+     * list read earlier) a document restored meanwhile is left alone, files included. Returns true
+     * when the document was deleted.
+     */
+    private suspend fun delete(id: String, onlyIfTrashed: Boolean): Boolean {
         // Journaled first: if the process dies after the rows are gone, the folder is still removed later.
         docFiles.markPendingDelete(id)
+        var restored = false
         // Read inside the transaction: once the row is gone the cascade has taken the recordings
         // with it, and the speaker service keeps voice data per recording outside the database.
         val recordingIds: List<String>? = db.withTransaction {
-            if (db.documents().get(id) == null) return@withTransaction null
+            val cur = db.documents().get(id) ?: return@withTransaction null
+            if (onlyIfTrashed && cur.trashedAt == null) {
+                restored = true
+                return@withTransaction null
+            }
             val recordings = db.recordings().forDocument(id).map { it.id }
             db.chat().threadsForDocument(id).forEach { db.chat().deleteThread(it) }
             db.textIndex().deleteDocument(id)
@@ -480,17 +494,29 @@ class LibraryRepositoryImpl internal constructor(
             db.documents().delete(id)
             recordings
         }
+        if (restored) {
+            docFiles.clearPendingDelete(id)
+            return false
+        }
         docFiles.deleteDocument(id)
         docFiles.clearPendingDelete(id)
         if (recordingIds != null) {
             if (recordingIds.isNotEmpty()) hooks.recordingsDeleted(id, recordingIds)
             hooks.documentDeleted(id)
         }
+        return recordingIds != null
     }
 
+    /**
+     * Deletes what is in the trash now. Emptying a large trash takes a while and finishes in the
+     * background, so what is restored or trashed meanwhile is left alone: a document restored
+     * before its turn stays, and a folder trashed after the start keeps its row (its documents are
+     * not on the list either).
+     */
     override suspend fun emptyTrash() {
+        val folders = db.folders().getAllIncludingTrashed().filter { it.trashedAt != null }.mapTo(HashSet()) { it.id }
         for (doc in db.documents().trashed()) deleteQuietly(doc.id)
-        deleteTrashedFolders(before = null)
+        deleteTrashedFolders(before = null, only = folders)
     }
 
     /**
@@ -513,9 +539,9 @@ class LibraryRepositoryImpl internal constructor(
         return removed
     }
 
+    /** Deletes a trashed document (left alone if restored meanwhile); true when it was deleted. */
     private suspend fun deleteQuietly(id: String): Boolean = try {
-        deletePermanently(id)
-        true
+        delete(id, onlyIfTrashed = true)
     } catch (c: CancellationException) {
         throw c
     } catch (e: Exception) {
@@ -523,11 +549,16 @@ class LibraryRepositoryImpl internal constructor(
         false
     }
 
-    /** Deletes trashed folder rows (all, or those trashed before [before]); live content inside moves to the root. */
-    private suspend fun deleteTrashedFolders(before: Long?) {
+    /**
+     * Deletes trashed folder rows (all, or those trashed before [before], or among [only]); live
+     * content inside moves to the root.
+     */
+    private suspend fun deleteTrashedFolders(before: Long?, only: Set<String>? = null) {
         db.withTransaction {
             val all = db.folders().getAllIncludingTrashed()
-            val doomed = all.filter { f -> f.trashedAt != null && (before == null || f.trashedAt < before) }.mapTo(HashSet()) { it.id }
+            val doomed = all.filter { f ->
+                f.trashedAt != null && (before == null || f.trashedAt < before) && (only == null || f.id in only)
+            }.mapTo(HashSet()) { it.id }
             if (doomed.isEmpty()) return@withTransaction
             all.filter { it.id !in doomed && it.parentId != null && it.parentId in doomed }
                 .forEach { db.folders().upsert(it.copy(parentId = null)) }
