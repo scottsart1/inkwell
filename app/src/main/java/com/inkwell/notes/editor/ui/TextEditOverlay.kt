@@ -32,6 +32,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -85,11 +86,25 @@ fun TextEditOverlay(request: TextEditRequest, onDone: (text: String, config: Tex
     val density = LocalDensity.current
     val c = Inkwell.colors
 
+    // At most one hand-over per request (an explicit commit, or the one on dispose below).
+    val done = remember(request) { booleanArrayOf(false) }
     fun commit() {
+        if (done[0]) return
+        done[0] = true
         keyboard?.hide()
         onDone(value.text, config)
     }
     BackHandler { commit() }
+    // Leaving the editor while the box is open (top bar back, a session tab, closing a split
+    // pane) removes the overlay without a tap outside: keep what was typed.
+    DisposableEffect(request) {
+        onDispose {
+            if (!done[0] && (value.text != request.initialText || config != request.config)) {
+                done[0] = true
+                onDone(value.text, config)
+            }
+        }
+    }
     LaunchedEffect(request) {
         runCatching { focus.requestFocus() }
         keyboard?.show()

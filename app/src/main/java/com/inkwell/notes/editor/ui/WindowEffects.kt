@@ -31,13 +31,29 @@ fun Context.findActivity(): Activity? {
     return null
 }
 
-/** Keeps the screen on while an editor is visible. */
+/** Screens currently asking to keep each view's screen on (main thread only). */
+private val screenOnRequests = java.util.WeakHashMap<android.view.View, Int>()
+
+/**
+ * Keeps the screen on while an editor is visible. Counted per view: the editor and the split
+ * view cross-fade, and the screen leaving last must not switch it off for the one now shown.
+ */
 @Composable
 fun KeepScreenOn(enabled: Boolean) {
     val view = LocalView.current
     DisposableEffect(view, enabled) {
-        view.keepScreenOn = enabled
-        onDispose { view.keepScreenOn = false }
+        if (!enabled) return@DisposableEffect onDispose { }
+        screenOnRequests[view] = (screenOnRequests[view] ?: 0) + 1
+        view.keepScreenOn = true
+        onDispose {
+            val left = (screenOnRequests[view] ?: 1) - 1
+            if (left > 0) {
+                screenOnRequests[view] = left
+            } else {
+                screenOnRequests.remove(view)
+                view.keepScreenOn = false
+            }
+        }
     }
 }
 

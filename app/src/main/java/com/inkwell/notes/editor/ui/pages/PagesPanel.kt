@@ -173,7 +173,10 @@ fun PagesPanelContent(controller: NotebookController, callbacks: PageCallbacks, 
         LaunchedEffect(reorder.draggingKey) {
             while (isActive && reorder.draggingKey != null) {
                 val speed = reorder.autoScrollSpeed
-                if (speed != 0f) gridState.scrollBy(speed)
+                if (speed != 0f) {
+                    gridState.scrollBy(speed)
+                    reorder.onAutoScrolled()
+                }
                 delay(16)
             }
         }
@@ -240,7 +243,8 @@ private fun pageMenu(controller: NotebookController, page: PageMeta, index: Int,
             controller.addPage(PageRanges.insertionIndex(index, after = true, count = controller.pages.size))
         },
         MenuItemSpec(stringResource(R.string.editor_duplicate_page), Icons.Outlined.CopyAll, 1) {
-            controller.launchOp(R.string.editor_duplicate_failed) { lib.duplicatePage(page.id) }
+            // The copy is made from the file: write the page's unsaved ink first.
+            controller.launchOp(R.string.editor_duplicate_failed) { controller.saveNow(); lib.duplicatePage(page.id) }
         },
         MenuItemSpec(stringResource(R.string.editor_rotate_page), Icons.AutoMirrored.Outlined.RotateRight, 1) {
             controller.launchOp(R.string.editor_rotate_failed) { lib.rotatePage(page.id, 90) }
@@ -277,7 +281,7 @@ private fun SelectionActions(controller: NotebookController, selected: Set<Strin
             callbacks.onDelete(ids)
         }, enabled = enabled && PageRanges.canDelete(ids.size, pages.size))
         IconAction(Icons.Outlined.CopyAll, stringResource(R.string.editor_duplicate_pages), {
-            controller.launchOp(R.string.editor_duplicate_failed) { ids.forEach { lib.duplicatePage(it) } }
+            controller.launchOp(R.string.editor_duplicate_failed) { controller.saveNow(); ids.forEach { lib.duplicatePage(it) } }
             onFinished()
         }, enabled = enabled)
         IconAction(Icons.AutoMirrored.Outlined.RotateRight, stringResource(R.string.editor_rotate_pages), {
@@ -302,6 +306,8 @@ class GridReorder(private val grid: LazyGridState) {
         private set
     private var droppedAt = 0L
     private var startOrder: List<String> = emptyList()
+    private var viewportHeight = 0f
+    private var edgePx = 0f
 
     private fun itemAt(p: Offset): LazyGridItemInfo? = grid.layoutInfo.visibleItemsInfo.firstOrNull {
         p.x >= it.offset.x && p.x <= it.offset.x + it.size.width && p.y >= it.offset.y && p.y <= it.offset.y + it.size.height
@@ -319,6 +325,8 @@ class GridReorder(private val grid: LazyGridState) {
 
     fun drag(amount: Offset, viewportHeight: Float, edgePx: Float) {
         val key = draggingKey ?: return
+        this.viewportHeight = viewportHeight
+        this.edgePx = edgePx
         delta += amount
         val info = grid.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key } ?: return
         val center = Offset(initialOffset.x + delta.x + info.size.width / 2f, initialOffset.y + delta.y + info.size.height / 2f)
@@ -333,6 +341,13 @@ class GridReorder(private val grid: LazyGridState) {
             else -> 0f
         }
     }
+
+    /**
+     * After an auto-scroll step the pages moved under a finger that may be still: move the
+     * dragged page to where the finger now is, so it never scrolls out of view (once it is
+     * gone, drags could neither move it nor stop the scrolling).
+     */
+    fun onAutoScrolled() = drag(Offset.Zero, viewportHeight, edgePx)
 
     /** Translation that keeps the dragged item under the finger. */
     fun displacement(): Offset {

@@ -133,10 +133,16 @@ class PaneActions(
     // ------------------------------------------------------------------ Text
 
     fun commitText(req: TextEditRequest, text: String, config: TextConfig) {
-        controller.textEdit = null
+        if (controller.textEdit === req) controller.textEdit = null
+        // Handed over while the pane closes: nothing to write into once the canvas is released.
+        if (!controller.bound) return
         when {
             req.sticky -> req.itemId?.let { canvas.updateSticky(ItemRef(req.pageId, it, ItemType.STICKY), text) }
-            req.itemId == null -> if (text.isNotBlank()) canvas.insertText(req.pageIndex, text, PointF(req.pageX, req.pageY), config, req.origin)
+            // By id: pages added, moved or deleted while the box was open shift the old index.
+            req.itemId == null -> if (text.isNotBlank()) {
+                controller.pages.indexOfFirst { it.id == req.pageId }.takeIf { it >= 0 }
+                    ?.let { canvas.insertText(it, text, PointF(req.pageX, req.pageY), config, req.origin) }
+            }
             text.isBlank() -> {
                 canvas.selectItems(req.pageId, listOf(req.itemId))
                 canvas.deleteSelection()

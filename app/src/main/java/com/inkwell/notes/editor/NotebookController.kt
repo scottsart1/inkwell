@@ -151,10 +151,13 @@ class NotebookController(
             if (docSeen) EditorSession.tabs.close(docId)
             return
         }
+        val first = !docSeen
         docSeen = true
         missing = false
         doc = d
-        EditorSession.tabs.open(docId, d.title)
+        // Later emissions only follow renames: an editor still on screen while its closed tab's
+        // exit transition runs (its pause stamps the view state) must not bring the tab back.
+        if (first) EditorSession.tabs.open(docId, d.title) else EditorSession.tabs.rename(docId, d.title)
         tryBind()
     }
 
