@@ -364,6 +364,9 @@ internal class InputRouter(private val e: InkEngine) {
     }
 
     private val longPress = Runnable {
+        // Without a long-press action a held contact must carry on as the gesture it is (a slow
+        // scroll, a lasso started after a pause): cancelling it first would swallow it for nothing.
+        if (e.inputPrefs.longPress == LongPressAction.NONE) return@Runnable
         val x: Float; val y: Float
         if (stylusId != -1) {
             val type = stylusToolType ?: return@Runnable
@@ -379,7 +382,6 @@ internal class InputRouter(private val e: InkEngine) {
             mode = Mode.CONSUMED
             x = f.x; y = f.y
         } else return@Runnable
-        if (e.inputPrefs.longPress == LongPressAction.NONE) return@Runnable
         val page = e.pageIndexAt(x, y)
         if (page < 0) return@Runnable
         e.viewToPage(page, x, y, tmp)
@@ -542,7 +544,9 @@ internal class InputRouter(private val e: InkEngine) {
             if (mode == Mode.NONE) mode = Mode.IGNORED
             return
         }
-        if (active == 1 && (mode == Mode.NONE || mode == Mode.IGNORED && fingers.size == 1)) {
+        // The only active finger starts a new gesture, also after an ignored contact: a palm that
+        // is still resting (it stays in [fingers]) must not block the other hand's finger.
+        if (active == 1 && (mode == Mode.NONE || mode == Mode.IGNORED)) {
             firstFingerTime = event.eventTime
             if (permission == FingerPermission.MULTI_ONLY) { mode = Mode.IGNORED; return }
             mode = Mode.PENDING
@@ -749,7 +753,7 @@ internal class InputRouter(private val e: InkEngine) {
                 } else if (!canceled) fingerTap(f.x, f.y)
                 fingerTool = null
                 fingerToolStarted = false
-                mode = if (fingers.isEmpty()) Mode.NONE else Mode.CONSUMED
+                mode = if (activeFingerCount() == 0) Mode.NONE else Mode.CONSUMED
             }
             Mode.SCROLL -> {
                 if (!canceled) {
@@ -760,7 +764,7 @@ internal class InputRouter(private val e: InkEngine) {
                         if (hypot(vx, vy) > minFling) e.viewportCtl.fling(vx, vy)
                     }
                 }
-                mode = if (fingers.isEmpty()) Mode.NONE else Mode.CONSUMED
+                mode = if (activeFingerCount() == 0) Mode.NONE else Mode.CONSUMED
             }
             Mode.TOOL -> {
                 val tool = fingerTool
@@ -773,7 +777,7 @@ internal class InputRouter(private val e: InkEngine) {
                 }
                 fingerTool = null
                 fingerToolStarted = false
-                mode = if (fingers.isEmpty()) Mode.NONE else Mode.CONSUMED
+                mode = if (activeFingerCount() == 0) Mode.NONE else Mode.CONSUMED
             }
             Mode.MULTI -> {
                 if (canceled) taps.invalidate()
@@ -793,7 +797,7 @@ internal class InputRouter(private val e: InkEngine) {
                     mode = Mode.NONE
                 } else baselineMulti()
             }
-            else -> if (fingers.isEmpty()) mode = Mode.NONE
+            else -> if (activeFingerCount() == 0) mode = Mode.NONE
         }
         if (fingers.isEmpty()) {
             velocity?.recycle()
