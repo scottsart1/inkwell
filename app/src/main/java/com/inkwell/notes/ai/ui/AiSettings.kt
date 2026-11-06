@@ -122,8 +122,13 @@ internal class AiSettingsViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun saveKey(p: AiProviderId, key: String) {
         val ai = ai ?: return
-        val k = key.trim()
-        if (k.isEmpty()) return
+        // saveKey requires a non-empty key after cleaning: a paste of only invisible characters
+        // (zero-width space, soft hyphen) passes isNotBlank() and would crash the save.
+        val k = AiServiceImpl.sanitizeKey(key)
+        if (k.isEmpty()) {
+            update(p) { it.copy(message = "That is not an API key. Copy the key again and paste it here.", messageIsError = true) }
+            return
+        }
         viewModelScope.launch {
             ai.saveKey(p, k)
             update(p) { it.copy(message = null) }

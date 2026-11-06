@@ -255,10 +255,8 @@ internal class PageIndexer(private val graph: AppGraph) {
         val prefs = graph.settings.current.ocr
         val sourceSize = sourcePdfSize(docId)
         val key = "$PDF_PAGE_KEY$pdfIndex"
-        fun wantsAi(c: CachedImageOcr): Boolean {
-            val mean = c.confidence ?: return false
-            return !c.isAi && !c.aiTried && prefs.aiAssistLowConfidence && mean < prefs.lowConfidenceThreshold && aiAvailable()
-        }
+        fun wantsAi(c: CachedImageOcr): Boolean =
+            prefs.aiAssistLowConfidence && c.needsAiAssist(prefs.lowConfidenceThreshold) && aiAvailable()
         val cached = if (sourceSize > 0) imageCache.get(docId, key, sourceSize) else null
         if (cached != null && !wantsAi(cached)) return pageEntries(cached, page)
 

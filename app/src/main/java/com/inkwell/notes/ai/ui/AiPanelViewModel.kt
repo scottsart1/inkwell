@@ -157,8 +157,19 @@ internal class AiPanelViewModel(private val graph: AppGraph, val docId: String) 
     suspend fun refreshModels() {
         val ai = ai ?: return
         configured = ai.engine.configuredProviders().isNotEmpty()
-        val options = runCatching { ai.modelsWith(AiCapability.TEXT) }.getOrDefault(emptyList())
-            .filter { it.ref.provider in ai.engine.configuredProviders() }
+        // The panel stays blank until models are loaded, and the providers' lists come over the
+        // network (offline: several seconds of retries per provider). Show the cached lists first.
+        if (!modelsLoaded) {
+            val cached = withContext(Dispatchers.IO) {
+                runCatching { ai.engine.configuredProviders().flatMap { p -> ai.engine.listed(p).map { it.toInfo(p) } } }.getOrDefault(emptyList())
+            }
+            applyModels(ai, cached)
+        }
+        applyModels(ai, runCatching { ai.modelsWith(AiCapability.TEXT) }.getOrDefault(emptyList()))
+    }
+
+    private fun applyModels(ai: AiServiceImpl, models: List<AiModelInfo>) {
+        val options = models.filter { AiCapability.TEXT in it.capabilities && it.ref.provider in ai.engine.configuredProviders() }
             .map { ModelOption(it) }
         modelOptions = options
         val current = selectedModel
@@ -230,7 +241,8 @@ internal class AiPanelViewModel(private val graph: AppGraph, val docId: String) 
 
     // ---------------------------------------------------------------- sending
 
-    val busy: Boolean get() = streaming != null || preparing
+    /** Also while the transmission notice waits for an answer: a second send would replace (and lose) the first question. */
+    val busy: Boolean get() = streaming != null || preparing || pendingNotice != null
 
     fun send(text: String = input, action: Prompts.QuickAction? = null) {
         val prompt = text.trim()
@@ -240,7 +252,9 @@ internal class AiPanelViewModel(private val graph: AppGraph, val docId: String) 
             preparing = true
             try {
                 val pending = prepare(prompt, action, persistUser = true) ?: return@launch
-                if (action == null) input = ""
+                // Only the text that was sent is cleared: a suggestion chip or a draft typed while
+                // the context was being prepared must not wipe what is in the field.
+                if (action == null && input.trim() == prompt) input = ""
                 proceed(pending)
             } finally {
                 preparing = false
@@ -412,6 +426,13 @@ internal class AiPanelViewModel(private val graph: AppGraph, val docId: String) 
                         }
                         is EngineEvent.Failed -> {
                             finished = true
+                            // The connection dropped (or the provider failed) mid-answer: keep what was
+                            // already shown, as Stop does, instead of letting it vanish behind the error.
+                            if (e.partialText.isNotBlank()) {
+                                val item = chats.add(tid, docId, AiRole.ASSISTANT, e.partialText, p.model, p.context.sources)
+                                messageNotes[item.id] = reply.notes + "The answer was interrupted before it was complete."
+                                if (reply.reasoning.isNotBlank()) messageReasoning[item.id] = reply.reasoning
+                            }
                             error = PanelError(e.failure.message, p.copy(persistUser = false))
                         }
                     }

@@ -2,6 +2,8 @@ package com.inkwell.notes.ocr.work
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
 import android.util.Log
 import com.inkwell.notes.core.storage.FileStore
 import com.inkwell.notes.ocr.text.OcrScaling
@@ -27,6 +29,12 @@ internal data class CachedImageOcr(
     data class CachedBlock(val text: String, val box: List<Float>, val confidence: Float? = null)
 
     val isAi: Boolean get() = engine.startsWith("ai:")
+
+    /** Local OCR below [threshold] mean confidence that no vision model has looked at yet ([aiTried]). */
+    fun needsAiAssist(threshold: Float): Boolean {
+        val mean = confidence ?: return false
+        return !isAi && !aiTried && mean < threshold
+    }
 }
 
 /**
@@ -145,13 +153,28 @@ internal class ImageOcrCache(private val dir: File) {
                     inSampleSize = OcrScaling.sampleSize(bounds.outWidth, bounds.outHeight)
                     inPreferredConfig = Bitmap.Config.ARGB_8888
                 }
-                BitmapFactory.decodeFile(file.path, opts)
+                BitmapFactory.decodeFile(file.path, opts)?.let(::onWhite)
             }
         } catch (e: OutOfMemoryError) {
             Log.w(TAG, "Image too large to read")
             null
         } catch (e: Exception) {
             null
+        }
+
+        /**
+         * [src] composited onto white when it has an alpha channel. The recogniser ignores alpha,
+         * so the transparent background of a PNG (stored as transparent black) would read as
+         * black and swallow dark text. [src] is recycled when a copy is returned.
+         */
+        private fun onWhite(src: Bitmap): Bitmap {
+            if (!src.hasAlpha()) return src
+            val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+            out.eraseColor(Color.WHITE)
+            Canvas(out).drawBitmap(src, 0f, 0f, null)
+            out.setHasAlpha(false)
+            src.recycle()
+            return out
         }
     }
 }

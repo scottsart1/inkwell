@@ -2,6 +2,8 @@ package com.inkwell.notes.ai
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
 import androidx.core.graphics.scale
 import com.inkwell.notes.ai.chat.ChatStore
 import com.inkwell.notes.ai.context.ContextAssembler
@@ -252,15 +254,31 @@ class AiServiceImpl(private val graph: AppGraph) : AiService {
         fun isStaleForbiddenFlag(reason: String?): Boolean =
             reason != null && ("(403)" in reason || "refused access" in reason)
 
+        /**
+         * PNG of [src] with its long edge at most [maxEdge], flattened onto white: a selection is
+         * ink on a transparent background, and vision APIs that drop the alpha channel read
+         * transparent pixels as black, so dark handwriting would arrive as a black image.
+         */
         fun encodePng(src: Bitmap, maxEdge: Int): ByteArray {
             val long = max(src.width, src.height)
             val bmp = if (long > maxEdge) {
                 val s = maxEdge.toFloat() / long
                 src.scale((src.width * s).roundToInt().coerceAtLeast(1), (src.height * s).roundToInt().coerceAtLeast(1))
             } else src
+            val flat = if (bmp.hasAlpha()) {
+                Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888).also { white ->
+                    white.eraseColor(Color.WHITE)
+                    // A hardware bitmap cannot be drawn on a software canvas: read it through a copy.
+                    val drawable = if (bmp.config == Bitmap.Config.HARDWARE) bmp.copy(Bitmap.Config.ARGB_8888, false) else bmp
+                    Canvas(white).drawBitmap(drawable, 0f, 0f, null)
+                    if (drawable !== bmp) drawable.recycle()
+                    white.setHasAlpha(false)
+                }
+            } else bmp
             val out = ByteArrayOutputStream()
-            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-            if (bmp !== src) bmp.recycle()
+            flat.compress(Bitmap.CompressFormat.PNG, 100, out)
+            if (flat !== src) flat.recycle()
+            if (bmp !== src && bmp !== flat) bmp.recycle()
             return out.toByteArray()
         }
     }
