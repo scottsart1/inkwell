@@ -1,18 +1,21 @@
 package com.inkwell.notes
 
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -21,10 +24,14 @@ import androidx.lifecycle.lifecycleScope
 import com.inkwell.notes.app.AppGraph
 import com.inkwell.notes.app.InkwellNavHost
 import com.inkwell.notes.app.PendingNavigation
+import com.inkwell.notes.core.model.DocumentMeta
 import com.inkwell.notes.settings.AppLockGate
 import com.inkwell.notes.ui.theme.Inkwell
 import com.inkwell.notes.ui.theme.InkwellTheme
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Single activity. AppCompatActivity (a FragmentActivity) so BiometricPrompt works for the
@@ -45,6 +52,16 @@ class MainActivity : AppCompatActivity() {
                 else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
             }
             InkwellTheme(settings.theme) {
+                // System bar icons follow the app's theme, which can differ from the system's (and a
+                // dark mode switch reaches this activity as a configuration change, not a restart).
+                val dark = Inkwell.colors.isDark
+                DisposableEffect(dark) {
+                    enableEdgeToEdge(
+                        statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { dark },
+                        navigationBarStyle = SystemBarStyle.auto(LIGHT_SCRIM, DARK_SCRIM) { dark },
+                    )
+                    onDispose {}
+                }
                 Box(Modifier.fillMaxSize().background(Inkwell.colors.ground)) {
                     AppLockGate {
                         InkwellNavHost(graph, pendingNavigation)
@@ -79,14 +96,45 @@ class MainActivity : AppCompatActivity() {
         if (uris.isEmpty()) return
         lifecycleScope.launch {
             try {
-                val mime = contentResolver.getType(uris.first()) ?: intent.type.orEmpty()
-                val doc = if (mime.startsWith("image/")) graph.pdf.importImages(uris)
-                else graph.pdf.importPdf(uris.first())
-                pendingNavigation.post { it.openDocument(doc) }
+                val mime = withContext(Dispatchers.IO) { contentResolver.getType(uris.first()) } ?: intent.type.orEmpty()
+                if (mime.startsWith("image/")) {
+                    val doc = graph.pdf.importImages(uris)
+                    pendingNavigation.post { it.openDocument(doc) }
+                } else {
+                    importPdfs(graph, uris)
+                }
+            } catch (c: CancellationException) {
+                throw c
             } catch (t: Throwable) {
                 Log.e("MainActivity", "Import failed", t)
                 Toast.makeText(this@MainActivity, "Couldn't import: ${t.message ?: "unknown error"}", Toast.LENGTH_LONG).show()
             }
+        }
+    }
+
+    /**
+     * Every shared PDF becomes a document (sharing several files sends them all at once). A single
+     * one opens; several stay in the library with a summary, as imports started there do.
+     */
+    private suspend fun importPdfs(graph: AppGraph, uris: List<Uri>) {
+        val imported = ArrayList<DocumentMeta>(uris.size)
+        var failure: Throwable? = null
+        for (uri in uris) {
+            try {
+                imported += graph.pdf.importPdf(uri)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                Log.e("MainActivity", "Import failed", t)
+                failure = t
+            }
+        }
+        when {
+            imported.isEmpty() -> throw failure ?: IllegalStateException("Nothing was imported")
+            uris.size == 1 -> imported[0].let { doc -> pendingNavigation.post { it.openDocument(doc) } }
+            imported.size == uris.size ->
+                Toast.makeText(this, resources.getQuantityString(R.plurals.lib_msg_imported, imported.size, imported.size), Toast.LENGTH_LONG).show()
+            else -> Toast.makeText(this, getString(R.string.lib_msg_import_partial, imported.size, uris.size), Toast.LENGTH_LONG).show()
         }
     }
 
@@ -99,6 +147,10 @@ class MainActivity : AppCompatActivity() {
         (if (Build.VERSION.SDK_INT >= 33) getParcelableArrayListExtra(name, Uri::class.java) else getParcelableArrayListExtra(name)) ?: emptyList()
 
     companion object {
+        /** The navigation bar scrims of [enableEdgeToEdge]'s defaults (only used below API 29). */
+        private val LIGHT_SCRIM = Color.argb(0xe6, 0xFF, 0xFF, 0xFF)
+        private val DARK_SCRIM = Color.argb(0x80, 0x1b, 0x1b, 0x1b)
+
         /** Opens the document whose id is in [EXTRA_DOC_ID]. */
         const val ACTION_OPEN_DOCUMENT = "com.inkwell.notes.OPEN_DOCUMENT"
         const val EXTRA_DOC_ID = "docId"
