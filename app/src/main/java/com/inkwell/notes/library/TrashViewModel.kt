@@ -78,7 +78,8 @@ class TrashViewModel(private val graph: AppGraph) : ViewModel() {
     fun emptyTrash() {
         if (emptying) return
         emptying = true
-        viewModelScope.launch {
+        // Finishes even when the user leaves the trash meanwhile (see [run]).
+        graph.appScope.launch(Dispatchers.Main.immediate) {
             try {
                 graph.library.emptyTrash()
                 message(UiText.Res(R.string.lib_trash_emptied))
@@ -116,10 +117,14 @@ class TrashViewModel(private val graph: AppGraph) : ViewModel() {
         }
     }
 
+    /**
+     * Restores and deletions run in the app scope: leaving the trash right after tapping must not
+     * cancel them halfway (a folder group half deleted, the rest of an emptied trash still there).
+     */
     private fun run(entry: TrashEntry, @StringRes error: Int, block: suspend () -> Unit) {
         if (entry.key in busy) return
         busy = busy + entry.key
-        viewModelScope.launch {
+        graph.appScope.launch(Dispatchers.Main.immediate) {
             try {
                 block()
             } catch (c: CancellationException) {
