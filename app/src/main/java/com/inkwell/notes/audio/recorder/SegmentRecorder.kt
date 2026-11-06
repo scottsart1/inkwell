@@ -73,6 +73,17 @@ internal class SegmentRecorder(
         0
     }
 
+    /**
+     * True while the system silences this recorder's own capture (a call or another app took
+     * the microphone). Asks for this recorder's configuration only: the recording callback lists
+     * every app's capture, including apps silenced because this one holds the microphone.
+     */
+    fun isSilenced(): Boolean = try {
+        recorder?.activeRecordingConfiguration?.isClientSilenced == true
+    } catch (_: RuntimeException) {
+        false
+    }
+
     /** Closes the current segment and continues in a new recorder (brief gap). */
     fun forceRoll() {
         val old = recorder ?: return

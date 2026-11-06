@@ -297,7 +297,9 @@ internal class RecordingEngine(private val graph: AppGraph) {
         val callback = object : AudioManager.AudioRecordingCallback() {
             override fun onRecordingConfigChanged(configs: MutableList<AudioRecordingConfiguration>) {
                 if (s.finishing) return
-                val silenced = configs.any { it.isClientSilenced }
+                // [configs] holds every app's capture (anonymised), including one silenced because
+                // we hold the microphone: only our own recorder's configuration says whether we are.
+                val silenced = s.recorder?.isSilenced() == true
                 s.silencedSince = if (silenced) (s.silencedSince.takeIf { it > 0 } ?: SystemClock.elapsedRealtime()) else 0L
             }
         }
