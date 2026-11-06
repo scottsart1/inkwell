@@ -8,6 +8,7 @@ import android.graphics.RectF
 import android.text.TextPaint
 import android.util.Log
 import com.inkwell.notes.R
+import com.inkwell.notes.app.AppGraph
 import com.inkwell.notes.core.model.ConnectorItem
 import com.inkwell.notes.core.model.ImageItem
 import com.inkwell.notes.core.model.PageContent
@@ -82,13 +83,15 @@ internal class EnginePainter(private val e: InkEngine) {
         val n = e.visiblePages(visible)
         val current = vp.currentPage(layout)
         val shadowR = 6f * e.density
+        // Settings > General > "Page edges".
+        val edges = runCatching { AppGraph.get(e.context).settings.current.view.showPageShadows }.getOrDefault(true)
         for (k in 0 until n) {
             val i = visible[k]
             val h = e.page(i) ?: continue
             e.pageClip(i, rect)
             val meta = e.renderMeta(i)
             shadowPaint.color = meta.paper.color
-            shadowPaint.setShadowLayer(shadowR, 0f, 1.5f * e.density, theme.pageShadow)
+            if (edges) shadowPaint.setShadowLayer(shadowR, 0f, 1.5f * e.density, theme.pageShadow) else shadowPaint.clearShadowLayer()
             canvas.drawRect(rect, shadowPaint)
             canvas.save()
             canvas.clipRect(rect)
