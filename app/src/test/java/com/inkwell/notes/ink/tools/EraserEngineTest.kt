@@ -145,4 +145,30 @@ class EraserEngineTest {
         val other = PageContent(strokes = listOf(TestInk.line("o", 0f, 80f, 100f, 80f)), connectors = content.connectors)
         assertSame(other.connectors.single(), erase(other, EraserMode.STROKE, EraserFilter.ALL, 50f, 80f).connectors.single())
     }
+
+    @Test fun erasingABoxLeavesAttachedArrowsEndingWhereTheBoxWas() {
+        // The arrow was drawn when box a stood far away; its stored start is that stale point.
+        val a = TestInk.rect("a", 0f, 0f, 100f, 50f)
+        val b = TestInk.rect("b", 300f, 0f, 400f, 50f)
+        val arrow = ConnectorItem("c", fromItemId = "a", toItemId = "b", fromX = -500f, fromY = -500f, toX = 350f, toY = 25f)
+        val loose = ConnectorItem("loose", fromItemId = "gone-long-ago", fromX = 700f, fromY = 700f, toX = 800f, toY = 800f)
+        val page = PageContent(shapes = listOf(a, b), connectors = listOf(arrow, loose))
+        for (mode in EraserMode.entries) {
+            val changed = Bounds()
+            val index = ItemIndex.build(page, IdentityHashMap())
+            // Erase on box a's left side (well away from the arrow).
+            val out = engine.apply(page, index, mode, EraserFilter.SHAPES_ONLY, 0f, 25f, 0f, 25f, 3f, changed)
+            assertEquals(mode.name, listOf("b"), out.shapes.map { it.id })
+            val c = out.connectors.single { it.id == "c" }
+            // Detached from the erased box at its right edge midpoint, still attached to b.
+            assertEquals(mode.name, null, c.fromItemId)
+            assertEquals(mode.name, 100f, c.fromX, 1e-3f)
+            assertEquals(mode.name, 25f, c.fromY, 1e-3f)
+            assertEquals(mode.name, "b", c.toItemId)
+            // A connector whose item vanished before this erase is left as it was.
+            assertSame(mode.name, loose, out.connectors.single { it.id == "loose" })
+            // The arrow's area is re-rendered.
+            assertTrue(mode.name, changed.contains(100f, 25f) && changed.contains(300f, 25f))
+        }
+    }
 }

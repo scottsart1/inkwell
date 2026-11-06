@@ -99,6 +99,9 @@ internal class ViewportController(private val e: InkEngine) {
     fun onInfiniteContentLoaded() {
         if (!autoCenter || !e.layout.isInfinite) return
         autoCenter = false
+        // Someone already writing on the board keeps the view: moving it under a stroke in
+        // progress would add a long stray segment to that stroke.
+        if (e.router.stylusInContact || e.router.activeTools().isNotEmpty()) return
         val c = e.page(0)?.content ?: return
         val b = PageRenderer.contentBoundsOf(c) ?: return
         vp.scrollX = b.centerX - vp.viewWidth / vp.scale / 2f
