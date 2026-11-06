@@ -1,10 +1,14 @@
 package com.inkwell.notes.app
 
 import android.net.Uri
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -113,7 +117,55 @@ private class NavControllerNavigator(
     }
 
     override fun back() {
-        if (!nav.popBackStack()) nav.navigate(Routes.library(null))
+        if (nav.previousBackStackEntry != null) {
+            nav.popBackStack()
+            return
+        }
+        // Nothing underneath (opened from a notification or a shared file): the library replaces
+        // it. The library itself is never popped, which would leave nothing to show.
+        if (nav.currentDestination?.route == Routes.LIBRARY) return
+        nav.navigate(Routes.library(null)) {
+            popUpTo(nav.graph.id) { inclusive = true }
+            launchSingleTop = true
+        }
+    }
+}
+
+/**
+ * The navigator one screen gets. Only the screen on top may navigate: a screen still fading out
+ * (a second tap on its back arrow, a tap during the transition) must not pop or push on behalf of
+ * the screen now showing, which can leave that screen visible but paused.
+ */
+private class EntryNavigator(
+    private val base: AppNavigator,
+    private val nav: NavHostController,
+    private val entry: NavBackStackEntry,
+) : AppNavigator {
+    private val onTop: Boolean get() = nav.currentBackStackEntry?.id == entry.id
+
+    /** When this screen went back itself; it may still open what replaces it (closing a tab or pane). */
+    private var leftAt = 0L
+
+    private val mayOpen: Boolean
+        get() = onTop || (leftAt != 0L && android.os.SystemClock.uptimeMillis() - leftAt < REPLACE_WINDOW_MS)
+
+    override fun openLibrary(folderId: String?) { if (mayOpen) base.openLibrary(folderId) }
+    override fun openDocument(doc: DocumentMeta, pageIndex: Int?) { if (mayOpen) base.openDocument(doc, pageIndex) }
+    override fun openDocumentById(docId: String, pageIndex: Int?) { if (mayOpen) base.openDocumentById(docId, pageIndex) }
+    override fun openSplit(leftDocId: String, rightDocId: String) { if (mayOpen) base.openSplit(leftDocId, rightDocId) }
+    override fun openSearch(query: String) { if (mayOpen) base.openSearch(query) }
+    override fun openSettings(section: SettingsSection) { if (mayOpen) base.openSettings(section) }
+    override fun openTrash() { if (mayOpen) base.openTrash() }
+
+    /** Only once and only from the top: a second tap on a fading back arrow does nothing. */
+    override fun back() {
+        if (!onTop) return
+        leftAt = android.os.SystemClock.uptimeMillis()
+        base.back()
+    }
+
+    private companion object {
+        const val REPLACE_WINDOW_MS = 1_000L
     }
 }
 
@@ -129,9 +181,21 @@ fun InkwellNavHost(graph: AppGraph, pendingNavigation: PendingNavigation) {
         onDispose { pendingNavigation.detach(navigator) }
     }
 
-    NavHost(navController = nav, startDestination = Routes.LIBRARY) {
+    @Composable
+    fun navFor(entry: NavBackStackEntry): AppNavigator = remember(entry.id) { EntryNavigator(navigator, nav, entry) }
+
+    // Short cross-fades: while a screen fades out it can still be touched, so the shorter the
+    // fade the less room for a tap meant for the screen coming in.
+    NavHost(
+        navController = nav,
+        startDestination = Routes.LIBRARY,
+        enterTransition = { fadeIn(tween(TRANSITION_MS)) },
+        exitTransition = { fadeOut(tween(TRANSITION_MS)) },
+        popEnterTransition = { fadeIn(tween(TRANSITION_MS)) },
+        popExitTransition = { fadeOut(tween(TRANSITION_MS)) },
+    ) {
         composable(Routes.LIBRARY, arguments = listOf(navArgument("folder") { type = NavType.StringType; defaultValue = "" })) {
-            LibraryScreen(navigator, it.arguments?.getString("folder")?.ifEmpty { null })
+            LibraryScreen(navFor(it), it.arguments?.getString("folder")?.ifEmpty { null })
         }
         composable(
             Routes.NOTEBOOK,
@@ -141,28 +205,28 @@ fun InkwellNavHost(graph: AppGraph, pendingNavigation: PendingNavigation) {
             ),
         ) {
             val page = it.arguments?.getInt("page") ?: -1
-            EditorScreen(it.arguments?.getString("docId").orEmpty(), page.takeIf { p -> p >= 0 }, navigator)
+            EditorScreen(it.arguments?.getString("docId").orEmpty(), page.takeIf { p -> p >= 0 }, navFor(it))
         }
         composable(Routes.WHITEBOARD, arguments = listOf(navArgument("docId") { type = NavType.StringType })) {
-            WhiteboardScreen(it.arguments?.getString("docId").orEmpty(), navigator)
+            WhiteboardScreen(it.arguments?.getString("docId").orEmpty(), navFor(it))
         }
         composable(Routes.TYPED, arguments = listOf(navArgument("docId") { type = NavType.StringType })) {
-            TypedDocumentScreen(it.arguments?.getString("docId").orEmpty(), navigator)
+            TypedDocumentScreen(it.arguments?.getString("docId").orEmpty(), navFor(it))
         }
         composable(
             Routes.SPLIT,
             arguments = listOf(navArgument("left") { type = NavType.StringType }, navArgument("right") { type = NavType.StringType }),
         ) {
-            SplitScreen(it.arguments?.getString("left").orEmpty(), it.arguments?.getString("right").orEmpty(), navigator)
+            SplitScreen(it.arguments?.getString("left").orEmpty(), it.arguments?.getString("right").orEmpty(), navFor(it))
         }
         composable(Routes.SEARCH, arguments = listOf(navArgument("q") { type = NavType.StringType; defaultValue = "" })) {
-            SearchScreen(it.arguments?.getString("q").orEmpty(), navigator)
+            SearchScreen(it.arguments?.getString("q").orEmpty(), navFor(it))
         }
         composable(Routes.SETTINGS, arguments = listOf(navArgument("section") { type = NavType.StringType; defaultValue = SettingsSection.GENERAL.name })) {
             val s = runCatching { SettingsSection.valueOf(it.arguments?.getString("section").orEmpty()) }.getOrDefault(SettingsSection.GENERAL)
-            SettingsScreen(s, navigator)
+            SettingsScreen(s, navFor(it))
         }
-        composable(Routes.TRASH) { TrashScreen(navigator) }
+        composable(Routes.TRASH) { TrashScreen(navFor(it)) }
     }
 }
 
@@ -185,3 +249,5 @@ class PendingNavigation {
         if (n != null) action(n) else pending = action
     }
 }
+
+private const val TRANSITION_MS = 150

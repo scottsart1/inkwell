@@ -49,7 +49,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import com.inkwell.notes.R
 import com.inkwell.notes.app.AppNavigator
 import com.inkwell.notes.library.FolderStyle
@@ -66,7 +66,7 @@ import kotlinx.coroutines.launch
 @Composable
 internal fun TrashContent(vm: TrashViewModel, nav: AppNavigator) {
     val c = Inkwell.colors
-    val entries by vm.entries.collectAsStateWithLifecycle()
+    val entries by vm.entries.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val resources = LocalContext.current.resources
