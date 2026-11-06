@@ -29,10 +29,14 @@ whose Drive you want to use. It is free.
    "Inkwell").
 2. **APIs & Services › Library**: search for **Google Drive API** and click **Enable**.
 3. **Google Auth Platform** (OAuth consent screen):
-   - **Branding**: app name "Inkwell", your email as the support and developer contact.
-   - **Audience**: user type **External**. Then either click **Publish app** (recommended; the
-     `drive.file` permission needs no Google review), or keep it in "Testing" and add your Gmail
-     address under **Test users** (Google may then ask you to reconnect every 7 days).
+   - **Branding**: app name "Inkwell", your email as the support and developer contact. Leave the
+     logo and the whole "App domain" section (home page, privacy policy, authorized domains)
+     empty: they are only needed for apps that are published or verified.
+   - **Audience**: user type **External**, stay in **Testing**, and add the Gmail address your
+     tablet uses under **Test users**. Google may ask you to sign in again about once a week:
+     tap **Reconnect** in Inkwell's settings.
+   - Use a project of its own: branding is per project, so renaming another project's app (a
+     payment app, say) would change what its users see.
 4. **Google Auth Platform › Clients › Create client**, type **Android**:
    - Package name: `com.inkwell.notes`
    - SHA-1 certificate fingerprint: `6D:0E:CF:04:54:6C:F2:60:FA:A9:97:0B:82:43:3B:BE:B7:A6:D9:A9`
@@ -46,6 +50,18 @@ whose Drive you want to use. It is free.
 
 If Google answers "isn't set up" when you connect, one of the values in step 4 doesn't match, or
 the Drive API in step 2 isn't enabled yet (it can take a few minutes after enabling).
+
+## A work computer that can't sign in to your Google account
+
+If the work computer blocks your personal Google account (Gmail doesn't open there, say), turn on
+**Open on any computer without signing in** in Inkwell's Google Drive settings. Inkwell then shares
+the Inkwell folder as "anyone with the link can view" and shows the link with Copy and Send
+buttons. Send it to yourself through something the work computer can open, bookmark it there,
+and the folder, PDFs, transcript Docs and recordings open without any sign-in.
+
+Anyone who has the link can view (not change) everything in the folder, and work computers
+usually log the addresses they visit, so it is off by default. Turning it off withdraws the link
+straight away. Try signing in at drive.google.com first; you only need the link if that fails.
 
 ## Without Google Drive
 

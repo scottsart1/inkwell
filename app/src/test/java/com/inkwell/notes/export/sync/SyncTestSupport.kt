@@ -343,6 +343,20 @@ class FakeDrive : DriveApi {
         nodes[id]?.trashed = true
     }
 
+    /** Ids shared with anyone who has the link. */
+    val sharedWithAnyone = LinkedHashSet<String>()
+
+    override suspend fun shareWithAnyone(id: String) {
+        step("share")
+        if (live(id) == null) throw DriveException.NotFound()
+        sharedWithAnyone += id
+    }
+
+    override suspend fun stopSharing(id: String) {
+        step("unshare")
+        sharedWithAnyone -= id
+    }
+
     /** "Inkwell/Economics/Term 1/Title/notes.pdf" for a live node. */
     fun path(id: String): String {
         val node = nodes.getValue(id)

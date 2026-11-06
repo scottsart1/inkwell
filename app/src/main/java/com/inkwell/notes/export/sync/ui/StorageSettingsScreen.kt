@@ -147,6 +147,19 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
                     setupOpen = vm.driveNeedsSetup,
                     onConnect = { driveFor = null; vm.connectDrive(enableFor = null) },
                     onHideSetup = vm::hideDriveSetup,
+                    sharedLink = vm.driveSharedLink,
+                    sharing = vm.driveSharing,
+                    onShareLink = vm::setDriveShareLink,
+                    onSendLink = { link ->
+                        val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+                            .setType("text/plain")
+                            .putExtra(android.content.Intent.EXTRA_TEXT, link)
+                        try {
+                            context.startActivity(android.content.Intent.createChooser(send, null))
+                        } catch (e: ActivityNotFoundException) {
+                            vm.notice = pickerMissing
+                        }
+                    },
                     onTest = vm::testDrive,
                     onDisconnect = vm::disconnectDrive,
                     onOpenDrive = {

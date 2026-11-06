@@ -182,6 +182,12 @@ data class DestinationPrefs(
      * not connected. Access itself is held by Google Play services, never by Inkwell.
      */
     val driveAccount: String? = null,
+    /**
+     * Opt-in: the "Inkwell" folder in Drive can be opened by anyone who has its link, without
+     * signing in to Google (for a work computer that can't use a personal Google account). Off
+     * by default; turning it off withdraws the link.
+     */
+    val driveShareLink: Boolean = false,
     /** Push automatically after edits settle; otherwise only on "Sync now". */
     val autoSync: Boolean = true,
     val audioOnUnmeteredOnly: Boolean = true,

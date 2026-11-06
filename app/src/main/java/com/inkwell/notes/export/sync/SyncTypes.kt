@@ -73,6 +73,7 @@ fun DestinationPrefs.withoutDrive(): DestinationPrefs = copy(
     transcripts = transcripts - OutputTarget.DRIVE,
     audio = audio - OutputTarget.DRIVE,
     driveAccount = null,
+    driveShareLink = false,
 )
 
 val NotesExportFormat.includesPdf: Boolean get() = this != NotesExportFormat.MARKDOWN
@@ -105,6 +106,8 @@ interface SyncStateStore {
     var lastError: String?
     /** Id of the "Inkwell" folder in Google Drive (null until created or after disconnecting). */
     var driveRootId: String?
+    /** The Drive folder id last shared with anyone who has the link (null = not shared). */
+    var driveSharedRootId: String?
     /**
      * Where the document's files were last written inside the folder destination [folder] (its
      * tree URI). Kept after the document is deleted (its copies stay), so no other document writes
@@ -131,6 +134,7 @@ class InMemorySyncState : SyncStateStore {
     override var lastSuccessAt: Long = 0
     override var lastError: String? = null
     override var driveRootId: String? = null
+    override var driveSharedRootId: String? = null
     private val driveFolders = HashMap<String, String>()
     /** Folder -> document id -> location. */
     private val locations = HashMap<String, HashMap<String, List<String>>>()
@@ -147,6 +151,7 @@ class InMemorySyncState : SyncStateStore {
     }
     override fun clearDrive() {
         driveRootId = null
+        driveSharedRootId = null
         synchronized(driveFolders) { driveFolders.clear() }
     }
 }

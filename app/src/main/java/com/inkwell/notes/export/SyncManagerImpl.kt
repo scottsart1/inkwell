@@ -200,7 +200,7 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
      * Also releases items that waited for Drive (setup, sign-in).
      */
     private suspend fun checkDrive(client: DriveClient, account: String): Result<String> = try {
-        DriveLayout(client, stateStore).root()
+        DriveLayout(client, stateStore, graph.settings.current.destinations.driveShareLink).root()
         if (stateStore.lastError != null) stateStore.lastError = null
         refreshStatus()
         if (graph.settings.current.destinations.autoSync) kick()
@@ -245,7 +245,7 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
             val email = oneShot.accountEmail() ?: throw DriveException.BadResponse()
             val previous = graph.settings.current.destinations.driveAccount
             if (previous != null && !previous.equals(email, ignoreCase = true)) stateStore.clearDrive()
-            DriveLayout(oneShot, stateStore).root()
+            DriveLayout(oneShot, stateStore, graph.settings.current.destinations.driveShareLink).root()
             graph.settings.update { s ->
                 var d = s.destinations.copy(driveAccount = email)
                 if (enableFor != null) d = d.withTargets(enableFor, d.targetsFor(enableFor) + OutputTarget.DRIVE)
@@ -272,6 +272,17 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
      */
     suspend fun disconnectDrive() = withContext(Dispatchers.IO) {
         val account = graph.settings.current.destinations.driveAccount
+        // Withdraw a shared link while Inkwell still has access: after revoking it no longer can.
+        val shared = runCatching { stateStore.driveSharedRootId }.getOrNull()
+        if (account != null && shared != null) {
+            try {
+                driveClient(PlayServicesDriveAuth(graph.context) { account }).stopSharing(shared)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Couldn't withdraw the Drive link: ${e.javaClass.simpleName}")
+            }
+        }
         graph.settings.update { it.copy(destinations = it.destinations.withoutDrive()) }
         stateStore.clearDrive()
         safely { graph.db.syncQueue().dropAllForTarget(OutputTarget.DRIVE.name) }
@@ -292,6 +303,31 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
     private fun driveClient(tokens: DriveTokens) = DriveClient(graph.http, tokens)
 
     /** The Inkwell folder in Drive on the web (My Drive until Inkwell has made its folder). */
+    /** The Inkwell folder's link for another computer, once the folder exists; null before. */
+    fun driveFolderLink(): String? =
+        runCatching { stateStore.driveRootId }.getOrNull()?.takeIf { it.isNotBlank() }?.let { DriveClient.folderUrl(it) }
+
+    /** True while the Inkwell folder is shared with anyone who has its link. */
+    fun driveLinkShared(): Boolean =
+        runCatching { stateStore.driveSharedRootId != null && stateStore.driveSharedRootId == stateStore.driveRootId }.getOrDefault(false)
+
+    /**
+     * Shares the Inkwell folder by link, or withdraws the link, right away (not at the next copy).
+     * Returns a failure ready to show when Drive refused.
+     */
+    suspend fun applyDriveSharing(): Result<Unit> = withContext(Dispatchers.IO) {
+        val prefs = graph.settings.current.destinations
+        val account = prefs.driveAccount ?: return@withContext Result.success(Unit)
+        try {
+            DriveLayout(driveClient(PlayServicesDriveAuth(graph.context) { account }), stateStore, prefs.driveShareLink).root()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: DriveException) {
+            Result.failure(SyncCheckFailure(e.message ?: "Google Drive didn't answer.", e))
+        }
+    }
+
     fun driveFolderUrl(): String =
         runCatching { stateStore.driveRootId }.getOrNull()?.takeIf { it.isNotBlank() }
             ?.let { "https://drive.google.com/drive/folders/$it" }

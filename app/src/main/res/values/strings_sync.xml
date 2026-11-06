@@ -35,8 +35,14 @@
     <string name="sync_drive_open">Open Drive in browser</string>
     <string name="sync_drive_disconnect">Disconnect</string>
     <string name="sync_drive_reconnect">Reconnect</string>
+    <string name="sync_drive_link_title">Open on any computer without signing in</string>
+    <string name="sync_drive_link_subtitle">For a work computer that can\'t sign in to your Google account. Anyone who has the link can view your Inkwell folder (not change it). Off withdraws the link.</string>
+    <string name="sync_drive_link_hint">Send this link to yourself and bookmark it on the other computer.</string>
+    <string name="sync_drive_link_pending">The link appears once the Inkwell folder is shared. Tap Test if it doesn\'t show up.</string>
+    <string name="sync_drive_link_copy">Copy link</string>
+    <string name="sync_drive_link_send">Send link</string>
     <string name="sync_drive_disconnect_title">Disconnect Google Drive?</string>
-    <string name="sync_drive_disconnect_body">Inkwell stops copying to Drive and gives up its access. Everything already in your Drive stays there.</string>
+    <string name="sync_drive_disconnect_body">Inkwell stops copying to Drive, withdraws a shared link and gives up its access. Everything already in your Drive stays there.</string>
     <string name="sync_drive_pick_outputs">Connected. Choose Google Drive for notes, transcripts or audio above to start copying.</string>
     <string name="sync_drive_layout">Files are saved as My Drive › Inkwell › folder › document › notes.pdf, notes.md, transcript_… (a Google Doc) and audio_….m4a.</string>
     <string name="sync_drive_cancelled">Google Drive wasn\'t connected.</string>
@@ -48,7 +54,7 @@
     <string name="sync_drive_setup_intro">Google only lets an app reach Drive once it has been registered. Do this once, on a computer, with the Google account you want to use (about 10 minutes):</string>
     <string name="sync_drive_setup_step1">Open console.cloud.google.com and create a project, for example “Inkwell”.</string>
     <string name="sync_drive_setup_step2">APIs &amp; Services › Library: search for “Google Drive API” and click Enable.</string>
-    <string name="sync_drive_setup_step3">Google Auth Platform › Branding: app name “Inkwell” and your email. Audience: External, then Publish app (or add your Gmail address as a test user).</string>
+    <string name="sync_drive_setup_step3">Google Auth Platform › Branding: app name “Inkwell”, your email as support and developer contact; leave the logo and app domain empty. Audience: External, stay in Testing, and add your Gmail address under Test users.</string>
     <string name="sync_drive_setup_step4">Google Auth Platform › Clients › Create client › Android: paste the package name and SHA-1 below.</string>
     <string name="sync_drive_setup_step5">Back here, tap Connect Google Drive and pick your account.</string>
     <string name="sync_drive_setup_package">Package name</string>

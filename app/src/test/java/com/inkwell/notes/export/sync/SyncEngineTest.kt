@@ -144,6 +144,32 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `the Inkwell folder is shared by link only when asked, once, and withdrawn when switched off`() = runBlocking {
+        val h = harness(drivePrefs)
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        h.engine.run()
+        assertTrue("off by default: nothing shared", cloud.sharedWithAnyone.isEmpty())
+        assertNull(h.state.driveSharedRootId)
+
+        h.prefs = h.prefs.copy(driveShareLink = true)
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        h.engine.run()
+        val root = cloud.node("Inkwell")!!.id
+        assertEquals(setOf(root), cloud.sharedWithAnyone)
+        assertEquals(root, h.state.driveSharedRootId)
+
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        h.engine.run()
+        assertEquals("shared once, not on every run", 1, cloud.calls.count { it == "share" })
+
+        h.prefs = h.prefs.copy(driveShareLink = false)
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        h.engine.run()
+        assertTrue("switched off: the link is withdrawn", cloud.sharedWithAnyone.isEmpty())
+        assertNull(h.state.driveSharedRootId)
+    }
+
+    @Test
     fun `a transcript that changes between Markdown and Google Doc stays one file`() = runBlocking {
         cloud.refuseConversion = true
         val h = harness(DestinationPrefs(transcripts = setOf(OutputTarget.DRIVE), driveAccount = "me@example.com"))

@@ -71,6 +71,12 @@ interface DriveApi {
 
     /** Moves one of Inkwell's own files to the Drive trash (recoverable there for 30 days). */
     suspend fun trash(id: String)
+
+    /** Lets anyone who has the link view [id] (a folder's contents follow it) without signing in. */
+    suspend fun shareWithAnyone(id: String)
+
+    /** Withdraws [shareWithAnyone]; the owner keeps access. */
+    suspend fun stopSharing(id: String)
 }
 
 /** Names and app properties Inkwell uses inside Google Drive. */

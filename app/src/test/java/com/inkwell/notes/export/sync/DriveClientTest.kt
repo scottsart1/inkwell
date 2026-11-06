@@ -183,6 +183,29 @@ class DriveClientTest {
     }
 
     @Test
+    fun `sharing by link creates a view-only anyone permission and withdrawing deletes it`() = runBlocking {
+        respond(200, """{"id":"anyoneWithLink"}""")
+        respond(204, "")
+        respond(404, """{"error":{"code":404,"errors":[{"reason":"notFound"}]}}""")
+        val c = client()
+        c.shareWithAnyone("root1")
+        val share = requests[0]
+        assertEquals("POST", share.method)
+        assertEquals("/drive/v3/files/root1/permissions", share.requestUrl!!.encodedPath)
+        val b = body(share)
+        assertEquals("reader", b["role"]!!.jsonPrimitive.content)
+        assertEquals("anyone", b["type"]!!.jsonPrimitive.content)
+        assertEquals("false", b["allowFileDiscovery"]!!.jsonPrimitive.content)
+
+        c.stopSharing("root1")
+        assertEquals("DELETE", requests[1].method)
+        assertEquals("/drive/v3/files/root1/permissions/anyoneWithLink", requests[1].requestUrl!!.encodedPath)
+        // Not shared any more (or never): withdrawing again is fine.
+        c.stopSharing("root1")
+        assertEquals("https://drive.google.com/drive/folders/root1", DriveClient.folderUrl("root1"))
+    }
+
+    @Test
     fun `a refused token is replaced once, then reported`() = runBlocking {
         respond(401, """{"error":{"code":401,"message":"Invalid Credentials","errors":[{"reason":"authError"}]}}""")
         respond(200, """{"user":{"emailAddress":"me@example.com"}}""")

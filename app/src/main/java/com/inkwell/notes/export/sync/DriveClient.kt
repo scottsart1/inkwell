@@ -105,6 +105,27 @@ class DriveClient(
         }
     }
 
+    override suspend fun shareWithAnyone(id: String) {
+        // View only, for whoever has the link; never listed in anyone's search.
+        val body = """{"role":"reader","type":"anyone","allowFileDiscovery":false}""".toRequestBody(JSON)
+        authorized(
+            build = { token ->
+                Request.Builder().url(api("files", id, "permissions").addQueryParameter("fields", "id").build())
+                    .post(body).bearer(token).build()
+            },
+        ) { }
+    }
+
+    override suspend fun stopSharing(id: String) {
+        try {
+            authorized(
+                build = { token -> Request.Builder().url(api("files", id, "permissions", ANYONE_WITH_LINK).build()).delete().bearer(token).build() },
+            ) { }
+        } catch (e: DriveException.NotFound) {
+            // Not shared (or the folder is gone): nothing to withdraw.
+        }
+    }
+
     override suspend fun upload(upload: DriveUpload): DriveItem {
         // A refused token can surface at either step; start the whole session again once.
         return try {
@@ -235,6 +256,10 @@ class DriveClient(
 
     companion object {
         const val DEFAULT_BASE = "https://www.googleapis.com/"
+        /** Drive's fixed id of the "anyone with the link" permission. */
+        const val ANYONE_WITH_LINK = "anyoneWithLink"
+        /** A folder on the web, as opened from another computer. */
+        fun folderUrl(id: String) = "https://drive.google.com/drive/folders/$id"
         private const val MAX_PAGES = 50
         private const val ITEM_FIELDS = "id,name,mimeType,parents,appProperties"
         private const val ITEM_FIELDS_TRASHED = "$ITEM_FIELDS,trashed"

@@ -91,6 +91,10 @@ internal class PrefsSyncStateStore(context: Context) : SyncStateStore {
         get() = prefs.getString(KEY_DRIVE_ROOT, null)
         set(value) = prefs.edit().apply { if (value == null) remove(KEY_DRIVE_ROOT) else putString(KEY_DRIVE_ROOT, value) }.apply()
 
+    override var driveSharedRootId: String?
+        get() = prefs.getString(KEY_DRIVE_SHARED, null)
+        set(value) = prefs.edit().apply { if (value == null) remove(KEY_DRIVE_SHARED) else putString(KEY_DRIVE_SHARED, value) }.apply()
+
     /** Locations live under "<folder tree URI><SEP><document id>", so each folder keeps its own. */
     private fun key(folder: String, docId: String) = folder + SEP + docId
 
@@ -145,6 +149,7 @@ internal class PrefsSyncStateStore(context: Context) : SyncStateStore {
 
     override fun clearDrive() {
         driveRootId = null
+        driveSharedRootId = null
         driveFolders.edit().clear().apply()
     }
 
@@ -159,6 +164,7 @@ internal class PrefsSyncStateStore(context: Context) : SyncStateStore {
         const val KEY_LAST_SUCCESS = "lastSuccessAt"
         const val KEY_LAST_ERROR = "lastError"
         const val KEY_DRIVE_ROOT = "driveRootId"
+        const val KEY_DRIVE_SHARED = "driveSharedRootId"
         const val LEGACY_LOCKED_UNTIL = "vaultLockedUntil"
         const val LEGACY_REFUSED_AT = "vaultCredentialsRefusedAt"
         const val SEP = "\u001F"

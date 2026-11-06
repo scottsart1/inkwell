@@ -622,7 +622,7 @@ class SyncEngine(
             driveBlocked?.let { throw it }
             driveLayout?.let { return it }
             val account = prefs.driveAccount?.takeIf { it.isNotBlank() } ?: throw DriveException.NotConnected()
-            return DriveLayout(driveClient(account), state).also { driveLayout = it }
+            return DriveLayout(driveClient(account), state, prefs.driveShareLink).also { driveLayout = it }
         }
 
         fun folderRoot(): FolderNode {

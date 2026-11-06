@@ -19,6 +19,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -91,6 +92,10 @@ internal fun DriveCard(
     onOpenDrive: () -> Unit,
     onCopied: (String) -> Unit,
     onHideSetup: () -> Unit = {},
+    sharedLink: String? = null,
+    sharing: Boolean = false,
+    onShareLink: (Boolean) -> Unit = {},
+    onSendLink: (String) -> Unit = {},
 ) {
     val c = Inkwell.colors
     val account = prefs.driveAccount
@@ -128,6 +133,31 @@ internal fun DriveCard(
         }
         CheckResult(check)
         if (account != null && !prefs.uses(OutputTarget.DRIVE)) InfoLine(stringResource(R.string.sync_drive_pick_outputs))
+        if (account != null) {
+            HairlineDivider()
+            SettingSwitch(
+                stringResource(R.string.sync_drive_link_title), prefs.driveShareLink, onShareLink,
+                subtitle = stringResource(R.string.sync_drive_link_subtitle),
+                enabled = !sharing,
+            )
+            if (prefs.driveShareLink) {
+                if (sharedLink != null) {
+                    val clipboard = LocalClipboardManager.current
+                    Row(Modifier.fillMaxWidth().heightIn(min = Dimens.minTouch), verticalAlignment = Alignment.CenterVertically) {
+                        SelectionContainer(Modifier.weight(1f)) {
+                            Text(sharedLink, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), color = c.ink)
+                        }
+                        SmallIconButton(Icons.Outlined.ContentCopy, stringResource(R.string.sync_drive_link_copy), {
+                            clipboard.setText(AnnotatedString(sharedLink)); onCopied(sharedLink)
+                        })
+                        SmallIconButton(Icons.Outlined.Share, stringResource(R.string.sync_drive_link_send), { onSendLink(sharedLink) })
+                    }
+                    Text(stringResource(R.string.sync_drive_link_hint), style = MaterialTheme.typography.bodySmall, color = c.inkMuted)
+                } else {
+                    Text(stringResource(R.string.sync_drive_link_pending), style = MaterialTheme.typography.bodySmall, color = c.inkMuted)
+                }
+            }
+        }
         Text(stringResource(R.string.sync_drive_layout), style = MaterialTheme.typography.bodySmall, color = c.inkMuted)
         if (account == null || setupOpen) {
             HairlineDivider()

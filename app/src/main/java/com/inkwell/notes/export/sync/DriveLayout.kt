@@ -16,8 +16,15 @@ import com.inkwell.notes.core.model.DocumentMeta
  * renamed or moved document keeps its Drive folder (renamed/moved along) and a renamed recording
  * keeps its files. Ids are remembered in [SyncStateStore] and checked again when they stop
  * working (deleted or trashed in Drive). One instance lives for one sync run.
+ *
+ * [shareLink] (opt-in) lets anyone who has the Inkwell folder's link view it without signing in;
+ * when it is off, a link shared earlier is withdrawn.
  */
-internal class DriveLayout(private val api: DriveApi, private val state: SyncStateStore) {
+internal class DriveLayout(
+    private val api: DriveApi,
+    private val state: SyncStateStore,
+    private val shareLink: Boolean = false,
+) {
     private var root: String? = null
     /** Library folder chain below the root -> Drive folder id. */
     private val folders = HashMap<List<String>, String>()
@@ -33,8 +40,21 @@ internal class DriveLayout(private val api: DriveApi, private val state: SyncSta
             ?: api.findByProperty(DriveNames.PROP_ROOT, "1").firstOrNull { it.isFolder }?.id
             ?: api.createFolder(DriveNames.ROOT_FOLDER, null, mapOf(DriveNames.PROP_ROOT to "1")).id
         if (id != state.driveRootId) state.driveRootId = id
+        applySharing(id)
         root = id
         return id
+    }
+
+    /** Shares the Inkwell folder by link, or withdraws that, to match [shareLink]; only on a change. */
+    private suspend fun applySharing(rootId: String) {
+        val shared = state.driveSharedRootId == rootId
+        if (shareLink && !shared) {
+            api.shareWithAnyone(rootId)
+            state.driveSharedRootId = rootId
+        } else if (!shareLink && state.driveSharedRootId != null) {
+            api.stopSharing(state.driveSharedRootId ?: rootId)
+            state.driveSharedRootId = null
+        }
     }
 
     /** The library folder chain [names] below the root, created as needed. */

@@ -88,6 +88,12 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
     var driveNeedsSetup by mutableStateOf(false)
         private set
     val driveSetup: DriveSetupInfo by lazy { DriveSetupInfo(context.packageName, signingSha1(context)) }
+    /** The Inkwell folder's link while it is shared with anyone who has it; null otherwise. */
+    var driveSharedLink by mutableStateOf<String?>(null)
+        private set
+    /** Sharing by link is being switched on or off right now. */
+    var driveSharing by mutableStateOf(false)
+        private set
     private var driveFor: SyncKind? = null
     var folderCheck by mutableStateOf<CheckState>(CheckState.Idle)
         private set
@@ -105,6 +111,36 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
         viewModelScope.launch {
             autoBackup = withContext(Dispatchers.IO) { runCatching { uiPrefs.autoBackup() }.getOrNull() }
             autoBackupStatus = withContext(Dispatchers.IO) { runCatching { BackupPrefs(context).status() }.getOrNull() } ?: AutoBackupStatus()
+        }
+        // The link appears once the folder exists and is shared (after connecting, a copy, a test).
+        viewModelScope.launch { status.collect { refreshDriveLink() } }
+    }
+
+    private suspend fun refreshDriveLink() {
+        driveSharedLink = withContext(Dispatchers.IO) {
+            impl?.takeIf { it.driveLinkShared() }?.driveFolderLink()
+        }
+    }
+
+    /**
+     * Opt-in: lets anyone who has the Inkwell folder's link open it without signing in to Google,
+     * or withdraws that. Applied to Drive right away.
+     */
+    fun setDriveShareLink(on: Boolean) {
+        if (driveSharing) return
+        driveSharing = true
+        // App scope: leaving the screen must not leave the folder shared when the user said no.
+        graph.appScope.launch {
+            try {
+                graph.settings.update { it.copy(destinations = it.destinations.copy(driveShareLink = on)) }
+                val result = impl?.applyDriveSharing()
+                withContext(Dispatchers.Main) {
+                    result?.exceptionOrNull()?.let { driveCheck = CheckState.Failed(it.message ?: context.getString(R.string.sync_drive_unavailable)) }
+                }
+                refreshDriveLink()
+            } finally {
+                withContext(Dispatchers.Main) { driveSharing = false }
+            }
         }
     }
 
@@ -244,6 +280,7 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
         }
         val result = manager.connectDrive(token, driveFor)
         driveFor = null
+        refreshDriveLink()
         driveCheck = result.fold(
             onSuccess = { email ->
                 driveNeedsSetup = false
@@ -270,6 +307,7 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
         driveCheck = CheckState.Running
         viewModelScope.launch {
             val r = graph.sync.testDrive()
+            refreshDriveLink()
             val cause = r.exceptionOrNull()?.cause
             if (cause is DriveException.NeedsSignIn || cause is DriveException.Unauthorized) {
                 // Google wants the user to approve again: show its screen right away.

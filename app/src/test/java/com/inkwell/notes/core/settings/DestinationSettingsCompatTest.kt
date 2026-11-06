@@ -32,6 +32,7 @@ class DestinationSettingsCompatTest {
         assertFalse(s.destinations.autoSync)
         assertFalse(s.destinations.audioOnUnmeteredOnly)
         assertNull(s.destinations.driveAccount)
+        assertFalse("sharing by link is opt-in", s.destinations.driveShareLink)
     }
 
     @Test
