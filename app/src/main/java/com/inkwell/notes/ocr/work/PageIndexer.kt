@@ -229,10 +229,8 @@ internal class PageIndexer(private val graph: AppGraph) {
         val prefs = graph.settings.current.ocr
         val sourceSize = withContext(Dispatchers.IO) { graph.files.sourcePdf(docId).let { if (it.exists()) it.length() else 0L } }
         val key = "$PDF_PAGE_KEY$pdfIndex"
-        fun wantsAi(c: CachedImageOcr): Boolean {
-            val mean = c.confidence ?: return false
-            return !c.isAi && prefs.aiAssistLowConfidence && mean < prefs.lowConfidenceThreshold && aiAvailable()
-        }
+        fun wantsAi(c: CachedImageOcr): Boolean =
+            prefs.aiAssistLowConfidence && c.needsAiAssist(prefs.lowConfidenceThreshold) && aiAvailable()
         val cached = if (sourceSize > 0) imageCache.get(docId, key, sourceSize) else null
         if (cached != null && !wantsAi(cached)) return pageEntries(cached, page)
 
@@ -264,6 +262,10 @@ internal class PageIndexer(private val graph: AppGraph) {
             }
             if (ai != null && ai.text.isNotBlank()) {
                 result = CachedImageOcr(ai.engine, ai.blocks.map { CachedImageOcr.CachedBlock(it.text, WHOLE, null) }, null)
+            } else if (ai != null) {
+                // The model was asked (and billed) but found no text: without this, every later
+                // annotation of the page would send it again.
+                result = local.copy(aiChecked = true)
             }
         }
         if (sourceSize > 0) imageCache.put(docId, key, sourceSize, result)
