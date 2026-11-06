@@ -86,6 +86,10 @@ fun SplitLayout(leftDocId: String, rightDocId: String, nav: AppNavigator, keepSc
     var first by rememberSaveable { mutableStateOf(leftDocId) }
     var second by rememberSaveable { mutableStateOf(rightDocId) }
     var fraction by rememberSaveable { mutableFloatStateOf(0.5f) }
+    // The editor that opened this split (null when opened from the library), taken once: a split
+    // left with Back must not leave it behind for the next split, whose "close pane" would then
+    // return to the library instead of opening the remaining document.
+    val openedFrom by rememberSaveable { mutableStateOf(EditorSession.splitOrigin.also { EditorSession.splitOrigin = null }) }
     val controllers = remember { mutableStateMapOf<String, NotebookController>() }
     val bounds = remember { mutableStateMapOf<String, Rect>() }
     val drag = remember { PaneDrag() }
@@ -103,10 +107,8 @@ fun SplitLayout(leftDocId: String, rightDocId: String, nav: AppNavigator, keepSc
 
     fun closePane(docId: String) {
         val remaining = otherOf(docId)
-        val origin = EditorSession.splitOrigin
-        EditorSession.splitOrigin = null
         nav.back()
-        if (remaining != origin) nav.openDocumentById(remaining)
+        if (remaining != openedFrom) nav.openDocumentById(remaining)
     }
 
     fun sinkFor(docId: String) = object : SelectionDragSink {

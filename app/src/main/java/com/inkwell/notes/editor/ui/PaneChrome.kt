@@ -156,7 +156,10 @@ private fun overflowItems(
         items += MenuItemSpec(stringResource(R.string.editor_action_outline), Icons.AutoMirrored.Outlined.Toc, 2) { ui.toggleLeft(LeftPanel.OUTLINE) }
     }
     if (mode == PaneMode.FULL) {
-        items += MenuItemSpec(stringResource(R.string.editor_action_focus), Icons.Outlined.CenterFocusWeak, 3) { ui.focusMode = true }
+        // A folded Focus button is already listed above.
+        if (TopBarAction.FOCUS !in folded) {
+            items += MenuItemSpec(stringResource(R.string.editor_action_focus), Icons.Outlined.CenterFocusWeak, 3) { ui.focusMode = true }
+        }
         items += MenuItemSpec(stringResource(R.string.editor_open_side_by_side), Icons.Outlined.VerticalSplit, 3) { ui.dialog = PaneDialog.PickSplitPartner }
     }
     val horizontal = settings.view.scrollDirection == ScrollDirection.HORIZONTAL

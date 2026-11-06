@@ -263,6 +263,9 @@ private fun DragToPaneHandle(sink: SelectionDragSink) {
     // Keyed on Unit: a recomposition handing in another sink must not cancel a drag in progress.
     val currentSink by rememberUpdatedState(sink)
     val label = stringResource(R.string.editor_sel_drag_to_pane)
+    // The split view hands out a new sink whenever it recomposes, which the drag itself causes;
+    // keying the gesture on it would cancel the drag at once (without end or cancel callbacks).
+    val currentSink by rememberUpdatedState(sink)
     Box(
         Modifier
             .size(width = 28.dp, height = Dimens.minTouch)

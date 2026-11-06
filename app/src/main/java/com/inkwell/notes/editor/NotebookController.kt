@@ -155,10 +155,13 @@ class NotebookController(
             if (docSeen) EditorSession.tabs.close(docId)
             return
         }
+        val first = !docSeen
         docSeen = true
         missing = false
         doc = d
-        EditorSession.tabs.open(docId, d.title)
+        // Later emissions only follow renames: an editor still on screen while its closed tab's
+        // exit transition runs (its pause stamps the view state) must not bring the tab back.
+        if (first) EditorSession.tabs.open(docId, d.title) else EditorSession.tabs.rename(docId, d.title)
         tryBind()
     }
 
@@ -296,11 +299,18 @@ class NotebookController(
 
     /** Closes the text overlay and applies [text] to the box (or sticky) it was editing. */
     fun commitText(req: TextEditRequest, text: String, config: TextConfig) {
-        textEdit = null
-        textDraft = null
+        // Only this request's overlay closes: a newer one opened meanwhile stays.
+        if (textEdit === req || textEdit == null) {
+            textEdit = null
+            textDraft = null
+        }
         when {
             req.sticky -> req.itemId?.let { canvas.updateSticky(ItemRef(req.pageId, it, ItemType.STICKY), text) }
-            req.itemId == null -> if (text.isNotBlank()) canvas.insertText(req.pageIndex, text, PointF(req.pageX, req.pageY), config, req.origin)
+            // By id: pages added, moved or deleted while the box was open shift the old index.
+            req.itemId == null -> if (text.isNotBlank()) {
+                val index = pages.indexOfFirst { it.id == req.pageId }.takeIf { it >= 0 } ?: req.pageIndex
+                canvas.insertText(index, text, PointF(req.pageX, req.pageY), config, req.origin)
+            }
             text.isBlank() -> {
                 canvas.selectItems(req.pageId, listOf(req.itemId))
                 canvas.deleteSelection()

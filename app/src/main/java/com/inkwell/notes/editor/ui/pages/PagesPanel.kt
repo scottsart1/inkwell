@@ -173,7 +173,10 @@ fun PagesPanelContent(controller: NotebookController, callbacks: PageCallbacks, 
         LaunchedEffect(reorder.draggingKey) {
             while (isActive && reorder.draggingKey != null) {
                 val speed = reorder.autoScrollSpeed
-                if (speed != 0f) gridState.scrollBy(speed)
+                if (speed != 0f) {
+                    gridState.scrollBy(speed)
+                    reorder.onAutoScrolled()
+                }
                 delay(16)
             }
         }
@@ -303,6 +306,8 @@ class GridReorder(private val grid: LazyGridState) {
         private set
     private var droppedAt = 0L
     private var startOrder: List<String> = emptyList()
+    private var viewportHeight = 0f
+    private var edgePx = 0f
 
     private fun itemAt(p: Offset): LazyGridItemInfo? = grid.layoutInfo.visibleItemsInfo.firstOrNull {
         p.x >= it.offset.x && p.x <= it.offset.x + it.size.width && p.y >= it.offset.y && p.y <= it.offset.y + it.size.height
@@ -320,6 +325,8 @@ class GridReorder(private val grid: LazyGridState) {
 
     fun drag(amount: Offset, viewportHeight: Float, edgePx: Float) {
         val key = draggingKey ?: return
+        this.viewportHeight = viewportHeight
+        this.edgePx = edgePx
         delta += amount
         val info = grid.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key } ?: return
         val center = Offset(initialOffset.x + delta.x + info.size.width / 2f, initialOffset.y + delta.y + info.size.height / 2f)
@@ -334,6 +341,13 @@ class GridReorder(private val grid: LazyGridState) {
             else -> 0f
         }
     }
+
+    /**
+     * After an auto-scroll step the pages moved under a finger that may be still: move the
+     * dragged page to where the finger now is, so it never scrolls out of view (once it is
+     * gone, drags could neither move it nor stop the scrolling).
+     */
+    fun onAutoScrolled() = drag(Offset.Zero, viewportHeight, edgePx)
 
     /** Translation that keeps the dragged item under the finger. */
     fun displacement(): Offset {
