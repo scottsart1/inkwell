@@ -47,6 +47,26 @@ class ExportNamingTest {
         assertFalse(Character.isHighSurrogate(s.last()))
     }
 
+    @Test fun longNonLatinTitlesFitTheFileNameByteLimit() {
+        // ext4/f2fs refuse names over 255 bytes: 120 Korean or Chinese characters are 360 bytes.
+        for (title in listOf("한국어 노트".repeat(40), "漢字".repeat(100), "😀".repeat(100), "é".repeat(300), "x" + "語".repeat(150))) {
+            val name = ExportNaming.fileName(title, ExportFormat.DOCX, 1)
+            assertTrue(name, name.toByteArray(Charsets.UTF_8).size <= 255)
+            val second = ExportNaming.unique(name, listOf(name, "${name.substringBeforeLast('.')} (2).docx"))
+            assertTrue(second, second.toByteArray(Charsets.UTF_8).size <= 255)
+            assertTrue(name, name.endsWith(".docx") && !name.startsWith("."))
+            name.forEachIndexed { i, c ->
+                if (Character.isHighSurrogate(c)) assertTrue("lone surrogate in $name", i + 1 < name.length && Character.isLowSurrogate(name[i + 1]))
+                if (Character.isLowSurrogate(c)) assertTrue("lone surrogate in $name", i > 0 && Character.isHighSurrogate(name[i - 1]))
+            }
+        }
+        // Latin titles keep the character limit.
+        assertEquals(ExportNaming.MAX_BASE_LENGTH, ExportNaming.sanitize("a".repeat(300)).length)
+        assertEquals("日本語のノート", ExportNaming.sanitize("日本語のノート"))
+        assertEquals("ab", ExportNaming.truncateBytes("ab漢", 4))
+        assertEquals("ab漢", ExportNaming.truncateBytes("ab漢", 5))
+    }
+
     @Test fun extensionsAndZipsForMultiPageImages() {
         assertEquals("Notes.pdf", ExportNaming.fileName("Notes", ExportFormat.PDF, 4))
         assertEquals("Notes.png", ExportNaming.fileName("Notes", ExportFormat.PNG, 1))
@@ -164,6 +184,19 @@ class ExportNamingTest {
                 assertEquals(com.inkwell.notes.export.backup.PackageException.Reason.TOO_LARGE, e.reason)
             } finally {
                 dir3.deleteRecursively()
+            }
+            // A library backup picked as a package is refused at its first entry, before any
+            // of its (possibly huge) documents is unpacked.
+            val dir4 = Files.createTempDirectory("zip-safety").toFile()
+            try {
+                val backup = zipOf(LibraryManifest.FILE to "{}".toByteArray(), "documents/a__1.inkwell" to ByteArray(5_000))
+                ZipSafety.extract(ZipInputStream(ByteArrayInputStream(backup)), dir4, 1_000_000, refuse = setOf(LibraryManifest.FILE))
+                throw AssertionError("expected a backup to be refused")
+            } catch (e: com.inkwell.notes.export.backup.PackageException) {
+                assertEquals(com.inkwell.notes.export.backup.PackageException.Reason.NOT_A_PACKAGE, e.reason)
+                assertTrue(dir4.walk().none { it.isFile })
+            } finally {
+                dir4.deleteRecursively()
             }
         } finally {
             dir.deleteRecursively()

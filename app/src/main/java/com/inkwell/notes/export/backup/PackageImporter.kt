@@ -36,7 +36,9 @@ internal class PackageImporter(private val graph: AppGraph) {
             val budget = (graph.files.root.usableSpace - RESERVED_BYTES).coerceAtMost(MAX_PACKAGE_BYTES)
             if (budget <= 0) throw PackageException(PackageException.Reason.NO_SPACE)
             val names = try {
-                ZipSafety.extract(ZipInputStream(input), staging, budget)
+                // A library backup picked as a package would otherwise be unpacked whole (gigabytes,
+                // down to the last 64 MB of free space) before being rejected.
+                ZipSafety.extract(ZipInputStream(input), staging, budget, refuse = setOf(LibraryManifest.FILE))
             } catch (e: PackageException) {
                 throw e
             } catch (e: java.util.zip.ZipException) {

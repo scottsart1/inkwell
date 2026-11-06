@@ -46,9 +46,11 @@ object ZipSafety {
     /**
      * Extracts [zip] into [dir] (which must exist and be empty), refusing unsafe names, more
      * than [maxEntries] entries or more than [maxBytes] in total. Returns the relative paths
-     * written. Directories are created as needed.
+     * written. Directories are created as needed. An entry named in [refuse] means the zip is
+     * something else (a whole-library backup): it fails at once with NOT_A_PACKAGE instead of
+     * unpacking all of it first.
      */
-    fun extract(zip: ZipInputStream, dir: File, maxBytes: Long, maxEntries: Int = MAX_ENTRIES): List<String> {
+    fun extract(zip: ZipInputStream, dir: File, maxBytes: Long, maxEntries: Int = MAX_ENTRIES, refuse: Set<String> = emptySet()): List<String> {
         val written = ArrayList<String>()
         var total = 0L
         val buf = ByteArray(64 * 1024)
@@ -57,6 +59,7 @@ object ZipSafety {
             if (written.size >= maxEntries) throw PackageException(PackageException.Reason.TOO_LARGE)
             if (entry.isDirectory) continue
             val path = safeEntryPath(entry.name) ?: throw PackageException(PackageException.Reason.CORRUPT)
+            if (path in refuse) throw PackageException(PackageException.Reason.NOT_A_PACKAGE)
             val target = resolveInside(dir, path) ?: throw PackageException(PackageException.Reason.CORRUPT)
             target.parentFile?.mkdirs()
             target.outputStream().buffered().use { out ->
