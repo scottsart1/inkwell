@@ -2,6 +2,7 @@ package com.inkwell.notes.whiteboard.logic
 
 import com.inkwell.notes.core.model.InkPoints
 import com.inkwell.notes.core.model.PageContent
+import com.inkwell.notes.core.model.ShapeKind
 import kotlin.math.max
 import kotlin.math.min
 
@@ -26,14 +27,22 @@ data class Box(val left: Float, val top: Float, val right: Float, val bottom: Fl
 }
 
 object BoardGeometry {
-    /** Bounds of every item (strokes include their width, unattached connector ends included). */
+    /**
+     * Bounds of every item as drawn (strokes include their width, rotated boxes their rotated
+     * corners, unattached connector ends included).
+     */
     fun contentBounds(content: PageContent): Box? {
         var out: Box? = null
         fun add(b: Box?) { if (b != null) out = out?.union(b) ?: b }
         for (s in content.strokes) add(pointsBounds(s.points, InkPoints.STRIDE)?.inset(-s.width, -s.width))
-        for (s in content.shapes) add(pointsBounds(s.points, 2)?.inset(-s.strokeWidth / 2f, -s.strokeWidth / 2f))
-        for (t in content.texts) add(Box(t.x, t.y, t.x + t.width, t.y + t.height))
-        for (i in content.images) add(Box(i.x, i.y, i.x + i.width, i.y + i.height))
+        for (s in content.shapes) {
+            val raw = pointsBounds(s.points, 2) ?: continue
+            // Only box shapes carry a rotation (around their centre); others store real vertices.
+            val drawn = if (s.kind in ROTATED_SHAPES) BoardAnchors.rotated(raw, s.rotation) else raw
+            add(drawn.inset(-s.strokeWidth / 2f, -s.strokeWidth / 2f))
+        }
+        for (t in content.texts) add(BoardAnchors.rotated(Box(t.x, t.y, t.x + t.width, t.y + t.height), t.rotation))
+        for (i in content.images) add(BoardAnchors.rotated(Box(i.x, i.y, i.x + i.width, i.y + i.height), i.rotation))
         for (s in content.stickies) add(Box(s.x, s.y, s.x + s.width, s.y + s.height))
         for (c in content.connectors) {
             if (c.fromItemId == null) add(Box(c.fromX, c.fromY, c.fromX, c.fromY))
@@ -41,6 +50,8 @@ object BoardGeometry {
         }
         return out
     }
+
+    private val ROTATED_SHAPES = setOf(ShapeKind.RECTANGLE, ShapeKind.ROUNDED_RECTANGLE, ShapeKind.ELLIPSE)
 
     fun pointsBounds(points: FloatArray, stride: Int): Box? {
         if (points.size < 2) return null

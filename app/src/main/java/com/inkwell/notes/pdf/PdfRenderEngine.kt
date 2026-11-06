@@ -136,7 +136,10 @@ internal class PdfRenderEngine(
      */
     suspend fun probe(file: File): Probe {
         var failure: Probe = Probe.Damaged
-        val handle = withContext(dispatcher) {
+        // Not cancellable: withContext drops the result of a block that finished after its
+        // caller was cancelled, which would leak this renderer and its descriptor. A cancelled
+        // caller stops at the first batch below instead, and the finally block closes both.
+        val handle = withContext(NonCancellable + dispatcher) {
             var descriptor: ParcelFileDescriptor? = null
             try {
                 descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
