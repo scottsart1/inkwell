@@ -6,8 +6,10 @@ import androidx.annotation.StringRes
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -98,10 +100,23 @@ data class CardDecor(
  * State holder for [LibraryScreen]. Lives as long as the library's back-stack entry, so it
  * follows folder changes ([onNavFolder]) instead of being recreated per folder.
  */
-class LibraryViewModel(private val graph: AppGraph, initialFolderId: String?) : ViewModel() {
+class LibraryViewModel(
+    private val graph: AppGraph,
+    initialFolderId: String?,
+    private val saved: SavedStateHandle = SavedStateHandle(),
+) : ViewModel() {
 
     private val navFolder = MutableStateFlow(initialFolderId)
-    private val collection = MutableStateFlow<LibraryCollection?>(null)
+
+    /** The open collection; kept in the saved state (the route only knows the folder), so it survives process death. */
+    private val collection = MutableStateFlow(
+        saved.get<String>(KEY_COLLECTION)?.let { name -> LibraryCollection.entries.firstOrNull { it.name == name } },
+    )
+
+    private fun setCollection(c: LibraryCollection?) {
+        collection.value = c
+        saved[KEY_COLLECTION] = c?.name
+    }
     private val queryFlow = MutableStateFlow("")
 
     /** Search text bound to the text field (updated synchronously). */
@@ -117,7 +132,7 @@ class LibraryViewModel(private val graph: AppGraph, initialFolderId: String?) : 
     val settings: StateFlow<AppSettings> = graph.settings.settings
 
     val location: StateFlow<LibraryLocation> = combine(navFolder, collection, ::locationOf)
-        .stateIn(viewModelScope, SharingStarted.Eagerly, locationOf(initialFolderId, null))
+        .stateIn(viewModelScope, SharingStarted.Eagerly, locationOf(initialFolderId, collection.value))
 
     private val appliedQuery: Flow<String> = queryFlow
         .map { it.trim() }
@@ -337,25 +352,25 @@ class LibraryViewModel(private val graph: AppGraph, initialFolderId: String?) : 
     fun onNavFolder(folderId: String?) {
         if (navFolder.value == folderId) return
         navFolder.value = folderId
-        collection.value = null
+        setCollection(null)
         resetTransient()
     }
 
     /** Shows [folderId] (null = top level). The screen also asks the navigator to move there. */
     fun showFolder(folderId: String?) {
-        collection.value = null
+        setCollection(null)
         navFolder.value = folderId
         resetTransient()
     }
 
     fun showCollection(c: LibraryCollection) {
-        collection.value = c
+        setCollection(c)
         resetTransient()
     }
 
     /** Leaves a collection for the folder the user was browsing before. */
     fun leaveCollection() {
-        collection.value = null
+        setCollection(null)
         resetTransient()
     }
 
@@ -628,6 +643,7 @@ class LibraryViewModel(private val graph: AppGraph, initialFolderId: String?) : 
         private const val STORAGE_DEBOUNCE_MS = 1_500L
         private const val DEFAULT_FOLDER_NAME = "New folder"
         private const val MAX_THUMBNAIL_REQUESTS = 24
+        private const val KEY_COLLECTION = "collection"
 
         fun locationOf(folderId: String?, c: LibraryCollection?): LibraryLocation = when {
             c != null -> LibraryLocation.Collection(c)
@@ -636,7 +652,9 @@ class LibraryViewModel(private val graph: AppGraph, initialFolderId: String?) : 
         }
 
         fun factory(folderId: String?): ViewModelProvider.Factory = viewModelFactory {
-            initializer { LibraryViewModel(AppGraph.get(), folderId) }
+            initializer {
+                LibraryViewModel(AppGraph.get(), folderId, runCatching { createSavedStateHandle() }.getOrElse { SavedStateHandle() })
+            }
         }
     }
 }

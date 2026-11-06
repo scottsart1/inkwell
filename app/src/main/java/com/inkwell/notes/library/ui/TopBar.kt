@@ -76,7 +76,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.inkwell.notes.R
@@ -244,9 +246,17 @@ private fun SearchField(
     val c = Inkwell.colors
     val hint = stringResource(R.string.lib_search_hint)
     var focused by remember { mutableStateOf(false) }
+    // A query already there when the field is (re)composed, e.g. back from a document, keeps the
+    // cursor at its end: the String overload of BasicTextField starts it at 0, so Ctrl+F and typing
+    // would insert in front of the query.
+    var field by remember { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
+    val shown = if (field.text == text) field else TextFieldValue(text, TextRange(text.length))
     BasicTextField(
-        value = text,
-        onValueChange = onChange,
+        value = shown,
+        onValueChange = { v ->
+            field = v
+            if (v.text != text) onChange(v.text)
+        },
         singleLine = true,
         textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.ink),
         cursorBrush = SolidColor(c.accent),
