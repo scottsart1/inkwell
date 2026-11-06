@@ -3,13 +3,14 @@ package com.inkwell.notes.audio
 import com.inkwell.notes.audio.recorder.RecordingRuntime
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertSame
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Recording errors reach the recorder overlay through [RecordingRuntime]. Its state keeps equal
- * values, so the same failure twice in a row (Record tapped again with storage still full) is
- * only visible as a new report; without one the second tap showed nothing at all.
+ * Recording errors reach the recorder overlay through [RecordingRuntime]. The same failure twice
+ * in a row (Record tapped again with storage still full) must show again: it is a new state value
+ * (errors carry their time) and a new report.
  */
 class RecordingErrorReportTest {
     @After
@@ -18,16 +19,15 @@ class RecordingErrorReportTest {
     }
 
     @Test
-    fun theSameErrorTwiceIsTwoReportsAlthoughTheStateDoesNotChange() {
+    fun theSameErrorTwiceIsTwoReports() {
         RecordingRuntime.reportError("Not enough free storage to record.")
         val shown = RecordingRuntime.state.value
         val first = RecordingRuntime.errorReport.value
+        Thread.sleep(2)
 
         RecordingRuntime.reportError("Not enough free storage to record.")
 
-        // The state flow keeps the earlier, equal value: nothing for the overlay to react to...
-        assertSame(shown, RecordingRuntime.state.value)
-        // ...except the report count.
+        assertNotEquals("a new value the overlay reacts to", shown, RecordingRuntime.state.value)
         assertEquals(first + 1, RecordingRuntime.errorReport.value)
     }
 
@@ -35,10 +35,11 @@ class RecordingErrorReportTest {
     fun everyErrorIsPublishedAndCounted() {
         val before = RecordingRuntime.errorReport.value
         RecordingRuntime.reportError("Couldn't start recording.")
-        assertEquals(RecordingState.Error("Couldn't start recording."), RecordingRuntime.state.value)
+        assertEquals("Couldn't start recording.", (RecordingRuntime.state.value as RecordingState.Error).message)
         RecordingRuntime.mutableState.value = RecordingState.Idle
         RecordingRuntime.reportError("The microphone is in use by another app.")
-        assertEquals(RecordingState.Error("The microphone is in use by another app."), RecordingRuntime.state.value)
+        assertTrue(RecordingRuntime.state.value is RecordingState.Error)
+        assertEquals("The microphone is in use by another app.", (RecordingRuntime.state.value as RecordingState.Error).message)
         assertEquals(before + 2, RecordingRuntime.errorReport.value)
     }
 }

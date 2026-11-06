@@ -512,9 +512,9 @@ class LibraryRepositoryImpl internal constructor(
     override suspend fun emptyTrash() {
         // Only what was in the trash when emptying started: a folder trashed meanwhile (with its
         // documents, which are not in this list) keeps its row.
-        val startedAt = clock()
+        val folders = db.folders().getAllIncludingTrashed().filter { it.trashedAt != null }.mapTo(HashSet()) { it.id }
         for (doc in db.documents().trashed()) deleteQuietly(doc.id, trashedBefore = Long.MAX_VALUE)
-        deleteTrashedFolders(before = startedAt + 1)
+        deleteTrashedFolders(before = null, only = folders)
     }
 
     /**
@@ -550,10 +550,12 @@ class LibraryRepositoryImpl internal constructor(
     }
 
     /** Deletes trashed folder rows (all, or those trashed before [before]); live content inside moves to the root. */
-    private suspend fun deleteTrashedFolders(before: Long?) {
+    private suspend fun deleteTrashedFolders(before: Long?, only: Set<String>? = null) {
         db.withTransaction {
             val all = db.folders().getAllIncludingTrashed()
-            val doomed = all.filter { f -> f.trashedAt != null && (before == null || f.trashedAt < before) }.mapTo(HashSet()) { it.id }
+            val doomed = all.filter { f ->
+                f.trashedAt != null && (before == null || f.trashedAt < before) && (only == null || f.id in only)
+            }.mapTo(HashSet()) { it.id }
             if (doomed.isEmpty()) return@withTransaction
             all.filter { it.id !in doomed && it.parentId != null && it.parentId in doomed }
                 .forEach { db.folders().upsert(it.copy(parentId = null)) }
