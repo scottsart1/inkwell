@@ -386,6 +386,54 @@ class LibraryRepositoryPagesAndFoldersTest {
         assertEquals("A / B / C", repo.folderPath(c.id))
     }
 
+    @Test fun aRestoredFolderNeverDuplicatesTheNameOfAFolderCreatedMeanwhile() = runTest {
+        val old = repo.createFolder("Math", null)
+        val d = repo.createDocument(DocKind.NOTEBOOK, folderId = old.id)
+        repo.trashFolder(old.id)
+        val fresh = repo.createFolder("math", null)
+        assertEquals("math", fresh.name)
+        h.hooks.metaChanged.clear()
+        repo.restoreFolder(old.id)
+        assertNull(repo.getFolder(old.id)!!.trashedAt)
+        assertEquals("Math (2)", repo.getFolder(old.id)!!.name)
+        assertEquals("math", repo.getFolder(fresh.id)!!.name)
+        assertEquals("its documents are re-indexed under the new folder name", listOf(d.id), h.hooks.metaChanged)
+        // Restoring without a clash keeps the name.
+        val other = repo.createFolder("Physics", null)
+        repo.trashFolder(other.id)
+        repo.restoreFolder(other.id)
+        assertEquals("Physics", repo.getFolder(other.id)!!.name)
+    }
+
+    @Test fun restoringADocumentRevivesItsFolderChainUnderUniqueNames() = runTest {
+        val a = repo.createFolder("A", null)
+        val b = repo.createFolder("B", a.id)
+        val d = repo.createDocument(DocKind.NOTEBOOK, folderId = b.id)
+        repo.trashFolder(a.id)
+        val newA = repo.createFolder("A", null)
+        repo.restoreDocument(d.id)
+        assertNull(repo.getDocument(d.id)!!.trashedAt)
+        assertEquals(b.id, repo.getDocument(d.id)!!.folderId)
+        assertEquals("A (2) / B", repo.folderPath(b.id))
+        assertEquals("A", repo.getFolder(newA.id)!!.name)
+        assertEquals(2, repo.observeFolders().first().count { it.parentId == null })
+    }
+
+    @Test fun aRestoredFolderWhoseParentIsGoneBecomesTopLevelUnderAUniqueName() = runTest {
+        val p = repo.createFolder("P", null)
+        val c = repo.createFolder("Notes", p.id)
+        repo.trashFolder(c.id)
+        h.advance(1000)
+        repo.trashFolder(p.id)
+        h.db.folders().delete(p.id) // the parent was purged from the trash
+        repo.createFolder("Notes", null)
+        repo.restoreFolder(c.id)
+        val restored = repo.getFolder(c.id)!!
+        assertNull(restored.trashedAt)
+        assertNull(restored.parentId)
+        assertEquals("Notes (2)", restored.name)
+    }
+
     @Test fun emptyingTheTrashReRootsLiveContentOfDeletedFolders() = runTest {
         val a = repo.createFolder("A", null)
         val b = repo.createFolder("B", a.id)

@@ -143,9 +143,10 @@ class LibraryRepositoryImpl internal constructor(
     }
 
     override suspend fun restoreFolder(id: String) {
-        db.withTransaction {
+        val renamed = ArrayList<String>()
+        val affectedDocs = db.withTransaction {
             val tree = FolderTree(db.folders().getAllIncludingTrashed().map { it.toModel() })
-            val root = tree[id] ?: return@withTransaction
+            val root = tree[id] ?: return@withTransaction emptyList()
             val stamp = root.trashedAt
             if (stamp != null) {
                 // Restore what was trashed together with this folder; items trashed separately stay in the trash.
@@ -158,8 +159,12 @@ class LibraryRepositoryImpl internal constructor(
                     .filter { it.folderId != null && it.folderId in subtree && it.trashedAt == stamp }
                     .forEach { db.documents().update(it.copy(trashedAt = null)) }
             }
-            ensureFolderChainLive(root.parentId, childId = id)
+            ensureFolderChainLive(root.parentId, childId = id, renamed = renamed)
+            // A folder with the same name may have been created next to it while it was in the trash.
+            db.folders().get(id)?.let { cur -> if (keepSiblingNameUnique(cur)) renamed += id }
+            docsInRenamedFolders(renamed)
         }
+        affectedDocs.forEach { hooks.documentMetaChanged(it) }
     }
 
     override suspend fun folderPath(folderId: String?): String {
@@ -186,13 +191,22 @@ class LibraryRepositoryImpl internal constructor(
     /**
      * Makes [folderId] and its ancestors visible again (restoring trashed ones, re-rooting below a
      * missing parent). Returns [folderId] if it exists, null otherwise. Runs inside a transaction.
+     * A folder that comes back where a live sibling already has its name is renamed " (2)" (as a
+     * move would), and its id is added to [renamed].
      */
-    private suspend fun ensureFolderChainLive(folderId: String?, childId: String? = null): String? {
+    private suspend fun ensureFolderChainLive(
+        folderId: String?,
+        childId: String? = null,
+        renamed: MutableList<String> = ArrayList(),
+    ): String? {
         if (folderId == null) return null
         val all = db.folders().getAllIncludingTrashed().associateBy { it.id }
         if (all[folderId] == null) {
             // The parent is gone: the child becomes a top-level folder.
-            childId?.let { all[it] }?.let { db.folders().upsert(it.copy(parentId = null)) }
+            childId?.let { db.folders().get(it) }?.let {
+                db.folders().upsert(it.copy(parentId = null))
+                if (keepSiblingNameUnique(it.copy(parentId = null))) renamed += it.id
+            }
             return null
         }
         var current = all[folderId]
@@ -202,10 +216,33 @@ class LibraryRepositoryImpl internal constructor(
             var next: FolderEntity = current
             if (current.trashedAt != null) next = next.copy(trashedAt = null)
             if (current.parentId != null && parent == null) next = next.copy(parentId = null)
-            if (next != current) db.folders().upsert(next)
+            if (next != current) {
+                db.folders().upsert(next)
+                if (keepSiblingNameUnique(next)) renamed += next.id
+            }
             current = parent
         }
         return folderId
+    }
+
+    /**
+     * Renames the live folder [f] when another live folder in the same place has its name (folder
+     * names are unique among siblings). Returns true when it was renamed. Runs inside a transaction.
+     */
+    private suspend fun keepSiblingNameUnique(f: FolderEntity): Boolean {
+        if (f.trashedAt != null) return false
+        val name = uniqueSiblingName(f.name, f.parentId, f.id)
+        if (name == f.name) return false
+        db.folders().upsert(f.copy(name = name))
+        return true
+    }
+
+    /** Live and trashed documents filed in [folderIds] or below (their folder path changed). */
+    private suspend fun docsInRenamedFolders(folderIds: List<String>): List<String> {
+        if (folderIds.isEmpty()) return emptyList()
+        val tree = FolderTree(db.folders().getAllIncludingTrashed().map { it.toModel() })
+        val scope = folderIds.flatMapTo(HashSet()) { tree.subtree(it) }
+        return db.documents().getAll().filter { it.folderId != null && it.folderId in scope }.map { it.id }
     }
 
     // ------------------------------------------------------------------ Documents
@@ -416,13 +453,16 @@ class LibraryRepositoryImpl internal constructor(
     }
 
     override suspend fun restoreDocument(id: String) {
-        db.withTransaction {
-            val cur = db.documents().get(id) ?: return@withTransaction
-            if (cur.trashedAt == null) return@withTransaction
+        val renamed = ArrayList<String>()
+        val affectedDocs = db.withTransaction {
+            val cur = db.documents().get(id) ?: return@withTransaction emptyList()
+            if (cur.trashedAt == null) return@withTransaction emptyList()
             // Return it to its folder (bringing the folder back if needed), or to the root if the folder is gone.
-            val folderId = ensureFolderChainLive(cur.folderId)
+            val folderId = ensureFolderChainLive(cur.folderId, renamed = renamed)
             db.documents().update(cur.copy(trashedAt = null, folderId = folderId))
+            docsInRenamedFolders(renamed)
         }
+        affectedDocs.forEach { hooks.documentMetaChanged(it) }
     }
 
     override suspend fun deletePermanently(id: String) {
