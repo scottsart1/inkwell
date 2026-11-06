@@ -22,6 +22,7 @@ import com.inkwell.notes.ink.recognize.ScribbleDetector
 import com.inkwell.notes.ink.recognize.ShapeRecognizer
 import com.inkwell.notes.ink.render.PageRenderer
 import com.inkwell.notes.ink.render.PenModel
+import com.inkwell.notes.ink.select.SelectionClipboard
 import com.inkwell.notes.ink.select.SelectionMath
 import kotlin.math.hypot
 
@@ -456,7 +457,7 @@ class PenTool(override val type: ToolType) : InkTool {
         host.unschedule(holdCheck)
         host.wetInk.cancel()
         resetGesture(host)
-        host.applyEdit(pageIndex, "Scribble erase") { c -> ContentOps.remove(c, ids) }
+        host.applyEdit(pageIndex, "Scribble erase") { c -> SelectionClipboard.detachRemoved(c, ContentOps.remove(c, ids)) }
         host.haptic()
         return true
     }

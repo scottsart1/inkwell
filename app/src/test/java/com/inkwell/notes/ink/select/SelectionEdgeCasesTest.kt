@@ -118,6 +118,27 @@ class SelectionEdgeCasesTest {
         assertEquals(0f, bounds.left, 1e-3f); assertEquals(0f, bounds.top, 1e-3f)
     }
 
+    @Test fun removingAnAttachedItemFreezesTheArrowEndWhereTheItemWas() {
+        // Stored ends are stale creation-time points; the boxes have moved since.
+        val a = TextItem("a", 100f, 100f, 60f, 30f, "x")
+        val b = StickyItem("b", 300f, 100f, 50f, 30f)
+        val c = ConnectorItem("c", fromItemId = "a", toItemId = "b", fromX = -900f, fromY = -900f, toX = -800f, toY = -800f)
+        val other = ConnectorItem("o", fromItemId = "b", toItemId = "missing", fromX = 1f, fromY = 2f, toX = 3f, toY = 4f)
+        val page = PageContent(texts = listOf(a), stickies = listOf(b), connectors = listOf(c, other))
+        val out = SelectionClipboard.detachRemoved(page, ContentOps.remove(page, setOf("a")))
+        val fc = out.connectors.single { it.id == "c" }
+        assertEquals(null, fc.fromItemId)
+        // a's right edge midpoint (facing b), not the stale (-900, -900).
+        assertEquals(160f, fc.fromX, 1e-3f); assertEquals(115f, fc.fromY, 1e-3f)
+        assertEquals("b", fc.toItemId)
+        // Untouched by this edit: still refers to b and keeps its own dangling end as it was.
+        assertTrue(out.connectors.single { it.id == "o" } === other)
+        // Nothing removed (or no connectors): the very same content comes back.
+        assertTrue(SelectionClipboard.detachRemoved(page, page) === page)
+        val moved = ContentOps.replace(page, mapOf("a" to a.copy(x = 120f)))
+        assertTrue(SelectionClipboard.detachRemoved(page, moved) === moved)
+    }
+
     @Test fun remapAfterPasteKeepsAttachmentsAndDetachesUnknowns() {
         val c = ConnectorItem("c", fromItemId = "a", toItemId = "zz", fromX = 1f, fromY = 2f, toX = 3f, toY = 4f)
         val out = Items.remapConnector(c, mapOf("a" to "a2", "c" to "c2")) as ConnectorItem

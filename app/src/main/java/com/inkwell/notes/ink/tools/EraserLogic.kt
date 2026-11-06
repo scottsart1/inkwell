@@ -16,6 +16,7 @@ import com.inkwell.notes.ink.geometry.StrokeSplitter
 import com.inkwell.notes.ink.geometry.WordClusterer
 import com.inkwell.notes.ink.model.ContentOps
 import com.inkwell.notes.ink.model.ItemIndex
+import com.inkwell.notes.ink.select.SelectionClipboard
 import java.util.UUID
 
 /** Which items an eraser may touch. Text boxes, images and stickies are never erased. */
@@ -47,12 +48,24 @@ class EraserEngine(private val idFactory: () -> String = { UUID.randomUUID().toS
         val hits = index.hitBySegment(ax, ay, bx, by, radius) { EraserRules.allows(filter, it) }
         if (hits.isEmpty()) return content
         val tmp = Bounds()
-        return when (mode) {
+        val next = when (mode) {
             EraserMode.STROKE -> removeAll(content, hits, changed, tmp)
             EraserMode.PRECISION -> precision(content, hits, ax, ay, bx, by, radius, changed, tmp)
             EraserMode.SEGMENT -> segment(content, index, filter, hits, bx, by, changed, tmp)
             EraserMode.WORD -> word(content, index, filter, hits, changed, tmp)
         }
+        // Arrows attached to an erased box keep their end where the box was.
+        val out = SelectionClipboard.detachRemoved(content, next)
+        if (out !== next) {
+            val old = content.connectors.associateBy { it.id }
+            for (c in out.connectors) {
+                val was = old[c.id] ?: continue
+                if (c === was) continue
+                changed.union(ItemGeometry.bounds(was, tmp, content))
+                changed.union(ItemGeometry.bounds(c, tmp, out))
+            }
+        }
+        return out
     }
 
     private fun removeAll(content: PageContent, items: List<Any>, changed: Bounds, tmp: Bounds): PageContent {
