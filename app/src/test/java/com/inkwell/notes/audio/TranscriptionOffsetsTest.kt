@@ -88,4 +88,16 @@ class TranscriptionOffsetsTest {
         assertFalse(negative.matches(files))
         assertTrue(TranscriptCheckpoint(files, done = 3).matches(files))
     }
+
+    @Test
+    fun aSliverLeftByStoppingRightAfterASegmentSwitchIsNotSent() {
+        // Stopped 60 ms after the recorder moved to a new file: the API refuses audio under
+        // 0.1 s, which failed the whole job (and every "Try again") at that segment.
+        assertTrue(TranscriptAssembly.tooShortToTranscribe(60))
+        assertTrue(TranscriptAssembly.tooShortToTranscribe(TranscriptAssembly.MIN_TRANSCRIBE_MS - 1))
+        assertFalse(TranscriptAssembly.tooShortToTranscribe(TranscriptAssembly.MIN_TRANSCRIBE_MS))
+        assertFalse(TranscriptAssembly.tooShortToTranscribe(120_000))
+        // Unknown duration (older rows): still sent.
+        assertFalse(TranscriptAssembly.tooShortToTranscribe(0))
+    }
 }

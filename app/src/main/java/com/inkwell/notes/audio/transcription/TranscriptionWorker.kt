@@ -91,6 +91,7 @@ class TranscriptionWorker(appContext: Context, params: WorkerParameters) : Corou
                 val offset = TranscriptAssembly.offsetOf(durations, i)
                 val pieces = when {
                     !file.isFile || file.length() == 0L -> emptyList()
+                    TranscriptAssembly.tooShortToTranscribe(duration) -> emptyList()
                     references != null -> {
                         val refs = references.referencesFor(speakers.voices)
                         val t = graph.ai.transcribeDiarized(recordingId, file, duration, offset, refs.references, checkpoint.language)
