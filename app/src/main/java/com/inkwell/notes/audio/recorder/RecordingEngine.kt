@@ -137,7 +137,7 @@ internal class RecordingEngine(private val graph: AppGraph) {
                 } finally {
                     pendingStarts.decrementAndGet()
                 }
-                is Command.Refused -> if (session == null) state.value = RecordingState.Error(c.message)
+                is Command.Refused -> if (session == null) RecordingRuntime.reportError(c.message)
                 Command.Pause -> session?.let { pause(it) }
                 Command.Resume -> session?.let { resume(it) }
                 is Command.Stop -> {
@@ -185,11 +185,11 @@ internal class RecordingEngine(private val graph: AppGraph) {
 
         val doc = runCatching { graph.library.getDocument(docId) }.getOrNull()
         if (doc == null) {
-            state.value = RecordingState.Error(context.getString(R.string.audio_error_doc_missing))
+            RecordingRuntime.reportError(context.getString(R.string.audio_error_doc_missing))
             return
         }
         if (runCatching { graph.files.root.usableSpace }.getOrDefault(Long.MAX_VALUE) < MIN_FREE_TO_START) {
-            state.value = RecordingState.Error(context.getString(R.string.audio_error_storage))
+            RecordingRuntime.reportError(context.getString(R.string.audio_error_storage))
             return
         }
         val now = System.currentTimeMillis()
@@ -213,7 +213,7 @@ internal class RecordingEngine(private val graph: AppGraph) {
         } catch (t: Throwable) {
             Log.e(TAG, "Could not create the recording row", t)
             dir.deleteRecursively()
-            state.value = RecordingState.Error(context.getString(R.string.audio_error_start))
+            RecordingRuntime.reportError(context.getString(R.string.audio_error_start))
             return
         }
 
@@ -232,7 +232,7 @@ internal class RecordingEngine(private val graph: AppGraph) {
             Log.w(TAG, "Recorder failed to start", started.exceptionOrNull())
             runCatching { graph.db.recordings().delete(recordingId) }
             dir.deleteRecursively()
-            state.value = RecordingState.Error(context.getString(R.string.audio_error_start))
+            RecordingRuntime.reportError(context.getString(R.string.audio_error_start))
             return
         }
         session = s
@@ -379,7 +379,7 @@ internal class RecordingEngine(private val graph: AppGraph) {
         session = null
         RecordingRuntime.session = null
         releaseWakeLock()
-        state.value = if (error != null) RecordingState.Error(error) else RecordingState.Idle
+        if (error != null) RecordingRuntime.reportError(error) else state.value = RecordingState.Idle
 
         // The segment being written when we stopped.
         val last = stopped?.file
@@ -408,7 +408,7 @@ internal class RecordingEngine(private val graph: AppGraph) {
             }
         } catch (t: Throwable) {
             Log.e(TAG, "Completing the recording failed", t)
-            if (error == null) state.value = RecordingState.Error(context.getString(R.string.audio_error_save))
+            if (error == null) RecordingRuntime.reportError(context.getString(R.string.audio_error_save))
             return
         }
         if (updated == null) {

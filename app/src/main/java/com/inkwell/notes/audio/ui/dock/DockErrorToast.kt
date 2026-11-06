@@ -44,13 +44,15 @@ import kotlinx.coroutines.delay
 
 /** Dark pill near the bottom of the editor reporting why recording stopped or could not start. */
 @Composable
-internal fun BoxWithConstraintsScope.DockErrorToast(error: RecordingState.Error) {
-    var visible by remember(error) { mutableStateOf(DockMemory.dismissedError !== error) }
-    LaunchedEffect(error) {
+internal fun BoxWithConstraintsScope.DockErrorToast(error: RecordingState.Error, report: Int) {
+    // Keyed by the report, not the state: the same error reported again is equal to the one
+    // already seen (the state does not even change) but must be shown again.
+    var visible by remember(error, report) { mutableStateOf(DockMemory.dismissedError != report) }
+    LaunchedEffect(error, report) {
         if (visible) {
             delay(TOAST_MS)
             visible = false
-            DockMemory.dismissedError = error
+            DockMemory.dismissedError = report
         }
     }
     val c = Inkwell.colors
@@ -80,7 +82,7 @@ internal fun BoxWithConstraintsScope.DockErrorToast(error: RecordingState.Error)
             Box(
                 Modifier.size(Dimens.minTouch).clip(CircleShape).clickable(role = Role.Button, onClickLabel = dismiss) {
                     visible = false
-                    DockMemory.dismissedError = error
+                    DockMemory.dismissedError = report
                 },
                 contentAlignment = Alignment.Center,
             ) {
