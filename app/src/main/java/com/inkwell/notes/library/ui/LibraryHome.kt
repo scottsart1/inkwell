@@ -57,7 +57,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import com.inkwell.notes.R
 import com.inkwell.notes.app.AppNavigator
 import com.inkwell.notes.app.SettingsSection
@@ -89,12 +89,12 @@ private fun LibraryLocation.key(): String = when (this) {
 @Composable
 internal fun LibraryHome(vm: LibraryViewModel, nav: AppNavigator) {
     val c = Inkwell.colors
-    val state by vm.state.collectAsStateWithLifecycle()
-    val decor by vm.decor.collectAsStateWithLifecycle()
-    val storage by vm.storage.collectAsStateWithLifecycle()
-    val aiNaming by vm.aiNaming.collectAsStateWithLifecycle()
-    val progress by vm.jobProgress.collectAsStateWithLifecycle()
-    val settings by vm.settings.collectAsStateWithLifecycle()
+    val state by vm.state.collectAsState()
+    val decor by vm.decor.collectAsState()
+    val storage by vm.storage.collectAsState()
+    val aiNaming by vm.aiNaming.collectAsState()
+    val progress by vm.jobProgress.collectAsState()
+    val settings by vm.settings.collectAsState()
     val resources = LocalContext.current.resources
     val controller = remember(vm, nav) { LibraryController(vm, nav, resources) }
     controller.state = state

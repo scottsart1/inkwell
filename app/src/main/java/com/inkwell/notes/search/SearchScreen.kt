@@ -65,7 +65,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.inkwell.notes.R
 import com.inkwell.notes.app.AppGraph
@@ -92,7 +92,7 @@ fun SearchScreen(initialQuery: String, nav: AppNavigator) {
     // new view model starts from that text, so the results match the field.
     var text by rememberSaveable { mutableStateOf(initialQuery) }
     val vm: SearchViewModel = viewModel { SearchViewModel(graph, text) }
-    val state by vm.state.collectAsStateWithLifecycle()
+    val state by vm.state.collectAsState()
     val c = Inkwell.colors
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = remember { FocusRequester() }
