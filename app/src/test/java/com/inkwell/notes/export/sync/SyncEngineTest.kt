@@ -144,6 +144,28 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `a transcript that changes between Markdown and Google Doc stays one file`() = runBlocking {
+        cloud.refuseConversion = true
+        val h = harness(DestinationPrefs(transcripts = setOf(OutputTarget.DRIVE), driveAccount = "me@example.com"))
+        transcribed(h)
+        h.engine.enqueue(d.id, SyncKind.TRANSCRIPT, h.prefs.transcripts, "rec-1")
+        h.engine.run()
+        assertEquals(listOf(drivePath("transcript_Lecture 3.md")), cloud.files())
+
+        // Drive converts again: the Google Doc replaces the Markdown copy, which goes to the trash.
+        cloud.refuseConversion = false
+        h.engine.enqueue(d.id, SyncKind.TRANSCRIPT, h.prefs.transcripts, "rec-1")
+        h.engine.run()
+        assertEquals(listOf(drivePath("transcript_Lecture 3")), cloud.files())
+
+        // And it stays one file on later updates.
+        h.engine.enqueue(d.id, SyncKind.TRANSCRIPT, h.prefs.transcripts, "rec-1")
+        h.engine.run()
+        assertEquals(listOf(drivePath("transcript_Lecture 3")), cloud.files())
+        assertEquals(1, cloud.calls.count { it == "trash" })
+    }
+
+    @Test
     fun `a renamed recording renames its files instead of adding new ones`() = runBlocking {
         val h = harness(DestinationPrefs(transcripts = setOf(OutputTarget.DRIVE), audio = setOf(OutputTarget.DRIVE), driveAccount = "me@example.com", audioOnUnmeteredOnly = false))
         transcribed(h)

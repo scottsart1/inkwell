@@ -34,6 +34,7 @@
     <string name="sync_drive_connected_as">Connected as %1$s. Copies go to My Drive › Inkwell.</string>
     <string name="sync_drive_open">Open Drive in browser</string>
     <string name="sync_drive_disconnect">Disconnect</string>
+    <string name="sync_drive_reconnect">Reconnect</string>
     <string name="sync_drive_disconnect_title">Disconnect Google Drive?</string>
     <string name="sync_drive_disconnect_body">Inkwell stops copying to Drive and gives up its access. Everything already in your Drive stays there.</string>
     <string name="sync_drive_pick_outputs">Connected. Choose Google Drive for notes, transcripts or audio above to start copying.</string>

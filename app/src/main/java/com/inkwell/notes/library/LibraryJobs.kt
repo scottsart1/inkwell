@@ -60,6 +60,7 @@ object LibraryJobs {
             var ok = 0
             var last: DocumentMeta? = null
             var failedName: String? = null
+            var failedReason: String? = null
             uris.forEachIndexed { i, uri ->
                 coroutineContext.ensureActive()
                 step(i)
@@ -71,10 +72,13 @@ object LibraryJobs {
                 } catch (t: Throwable) {
                     Log.w(TAG, "PDF import failed: ${t.javaClass.simpleName}")
                     failedName = displayName(graph.context, uri)
+                    // Why it failed (password-protected, damaged, not a PDF...) is worth saying.
+                    failedReason = (t as? com.inkwell.notes.pdf.PdfException)?.message?.takeIf { it.isNotBlank() }
                 }
             }
             step(uris.size)
-            reportImport(ok, uris.size, last, failedName)
+            if (ok == 0 && uris.size == 1 && failedReason != null) message(UiText.Raw(failedReason!!))
+            else reportImport(ok, uris.size, last, failedName)
         }
     }
 

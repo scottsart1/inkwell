@@ -20,7 +20,7 @@ sealed class DriveException(message: String, cause: Throwable? = null) : Excepti
     }
 
     /** Google needs the user to approve access again (revoked, password changed, consent expired). */
-    class NeedsSignIn : DriveException("Google Drive needs you to sign in again. Open Settings › Storage, sync & backup and tap Connect.") {
+    class NeedsSignIn : DriveException("Google Drive needs you to sign in again. Open Settings › Storage, sync & backup and tap Reconnect.") {
         override val retryable = false
         override val blocksDrive = true
     }
@@ -56,7 +56,7 @@ sealed class DriveException(message: String, cause: Throwable? = null) : Excepti
     }
 
     /** Still refused (401) with a freshly issued token. */
-    class Unauthorized : DriveException("Google Drive refused access. Open Settings › Storage, sync & backup and tap Connect again.") {
+    class Unauthorized : DriveException("Google Drive refused access. Open Settings › Storage, sync & backup and tap Reconnect.") {
         override val retryable = false
         override val blocksDrive = true
     }

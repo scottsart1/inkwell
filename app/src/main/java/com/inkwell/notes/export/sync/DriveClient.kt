@@ -94,6 +94,17 @@ class DriveClient(
         ) { r -> decode(r, FileResource.serializer()).toItem() }
     }
 
+    override suspend fun trash(id: String) {
+        val body = """{"trashed":true}""".toRequestBody(JSON)
+        try {
+            authorized(
+                build = { token -> Request.Builder().url(api("files", id).addQueryParameter("fields", "id").build()).patch(body).bearer(token).build() },
+            ) { }
+        } catch (e: DriveException.NotFound) {
+            // Already gone.
+        }
+    }
+
     override suspend fun upload(upload: DriveUpload): DriveItem {
         // A refused token can surface at either step; start the whole session again once.
         return try {
@@ -312,7 +323,8 @@ internal suspend fun Call.await(): Response = suspendCancellableCoroutine { cont
     cont.invokeOnCancellation { runCatching { cancel() } }
     enqueue(object : Callback {
         override fun onResponse(call: Call, response: Response) {
-            if (cont.isActive) cont.resume(response) else response.close()
+            // Cancelled between here and the caller resuming: nobody else will close it.
+            if (cont.isActive) cont.resume(response) { _, value, _ -> value.close() } else response.close()
         }
 
         override fun onFailure(call: Call, e: IOException) {

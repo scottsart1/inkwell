@@ -68,10 +68,10 @@ class PlayServicesDriveAuth(
             .apply { if (email != null) setAccount(Account(email, "com.google")) }
             .build()
 
-        /** Starts authorization from the settings screen. */
-        suspend fun begin(context: Context): Begin {
+        /** Starts authorization from the settings screen; [email] asks for that account again. */
+        suspend fun begin(context: Context, email: String? = null): Begin {
             val result = try {
-                Identity.getAuthorizationClient(context).authorize(request(null)).awaitTask()
+                Identity.getAuthorizationClient(context).authorize(request(email)).awaitTask()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: ApiException) {

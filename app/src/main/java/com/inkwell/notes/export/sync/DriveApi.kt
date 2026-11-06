@@ -68,6 +68,9 @@ interface DriveApi {
 
     /** Creates or replaces a file. */
     suspend fun upload(upload: DriveUpload): DriveItem
+
+    /** Moves one of Inkwell's own files to the Drive trash (recoverable there for 30 days). */
+    suspend fun trash(id: String)
 }
 
 /** Names and app properties Inkwell uses inside Google Drive. */

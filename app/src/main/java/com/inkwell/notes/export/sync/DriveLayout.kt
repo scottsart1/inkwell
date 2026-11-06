@@ -22,8 +22,8 @@ internal class DriveLayout(private val api: DriveApi, private val state: SyncSta
     /** Library folder chain below the root -> Drive folder id. */
     private val folders = HashMap<List<String>, String>()
     private val documents = HashMap<String, String>()
-    /** Document folder id -> Inkwell's files in it, by [DriveNames.PROP_FILE]. */
-    private val files = HashMap<String, MutableMap<String, DriveItem>>()
+    /** Document folder id -> Inkwell's files in it, by [DriveNames.PROP_FILE] (normally one each). */
+    private val files = HashMap<String, MutableMap<String, MutableList<DriveItem>>>()
 
     /** The "Inkwell" folder at the top of My Drive (created on first use, found again if its id is lost). */
     suspend fun root(): String {
@@ -84,7 +84,7 @@ internal class DriveLayout(private val api: DriveApi, private val state: SyncSta
     ): DriveItem {
         val existing = filesIn(folderId)
         // A Google Doc is only ever replaced by another conversion, never by a plain file and vice versa.
-        val previous = existing[key]?.takeIf { (convertTo == null) == (it.mimeType != DriveNames.MIME_GOOGLE_DOC) }
+        val previous = existing[key].orEmpty().firstOrNull { (convertTo == null) == (it.mimeType != DriveNames.MIME_GOOGLE_DOC) }
         val upload = DriveUpload(
             existingId = previous?.id,
             parentId = folderId,
@@ -99,10 +99,15 @@ internal class DriveLayout(private val api: DriveApi, private val state: SyncSta
         } catch (e: DriveException.NotFound) {
             // The previous version was deleted in Drive meanwhile: write a new one.
             if (previous == null) throw e
-            existing.remove(key)
+            existing[key]?.removeAll { it.id == previous.id }
             api.upload(upload.copy(existingId = null))
         }
-        existing[key] = item
+        // One file per output: a version of the other kind (a Markdown transcript next to its
+        // Google Doc, after Drive refused or accepted a conversion) goes to the Drive trash.
+        for (other in existing[key].orEmpty()) {
+            if (other.id != item.id) runCatching { api.trash(other.id) }
+        }
+        existing[key] = mutableListOf(item)
         return item
     }
 
@@ -120,11 +125,11 @@ internal class DriveLayout(private val api: DriveApi, private val state: SyncSta
         files.clear()
     }
 
-    private suspend fun filesIn(folderId: String): MutableMap<String, DriveItem> = files.getOrPut(folderId) {
-        val out = HashMap<String, DriveItem>()
+    private suspend fun filesIn(folderId: String): MutableMap<String, MutableList<DriveItem>> = files.getOrPut(folderId) {
+        val out = HashMap<String, MutableList<DriveItem>>()
         for (item in api.children(folderId)) {
             val k = item.properties[DriveNames.PROP_FILE] ?: continue
-            if (!item.isFolder) out.putIfAbsent(k, item)
+            if (!item.isFolder) out.getOrPut(k) { ArrayList() } += item
         }
         out
     }

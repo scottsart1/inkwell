@@ -27,7 +27,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val scope = inputData.getString(KEY_SCOPE)?.let { runCatching { SyncScope.valueOf(it) }.getOrNull() } ?: SyncScope.ALL
         return try {
             val report = manager.runQueue(scope)
-            if (report.retryLater && runAttemptCount < MAX_RUN_ATTEMPTS) Result.retry() else Result.success()
+            // After Google asked to slow down a delayed run is already scheduled: no quick retry.
+            if (report.retryLater && !report.slowDown && runAttemptCount < MAX_RUN_ATTEMPTS) Result.retry() else Result.success()
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {

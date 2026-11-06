@@ -313,7 +313,8 @@ interface ChatDao {
     @Query("SELECT * FROM chat_messages WHERE threadId = :threadId ORDER BY createdAt")
     fun observeThread(threadId: String): Flow<List<ChatMessageEntity>>
 
-    @Query("SELECT DISTINCT threadId FROM chat_messages WHERE documentId = :docId ORDER BY createdAt DESC")
+    /** Threads of a document, the one with the newest message first. */
+    @Query("SELECT threadId FROM chat_messages WHERE documentId = :docId GROUP BY threadId ORDER BY MAX(createdAt) DESC")
     suspend fun threadsForDocument(docId: String): List<String>
 
     @Upsert

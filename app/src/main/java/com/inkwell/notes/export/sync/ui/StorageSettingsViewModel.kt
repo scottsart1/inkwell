@@ -176,14 +176,19 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
 
     // ------------------------------------------------------------------ Google Drive
 
-    /** Asks Google for Drive access; [enableFor] switches Drive on for that output once connected. */
+    /**
+     * Asks Google for Drive access; [enableFor] switches Drive on for that output once connected.
+     * With an account already connected this is "Reconnect": Google asks for that account again
+     * (access was withdrawn, the password changed, or a Testing-mode grant expired).
+     */
     fun connectDrive(enableFor: SyncKind?) {
         if (driveCheck == CheckState.Running) return
         driveFor = enableFor
         driveCheck = CheckState.Running
+        val account = settings.value.destinations.driveAccount
         viewModelScope.launch {
             try {
-                when (val begin = PlayServicesDriveAuth.begin(context)) {
+                when (val begin = PlayServicesDriveAuth.begin(context, account)) {
                     is PlayServicesDriveAuth.Begin.NeedsConsent -> driveConsent = begin.intent
                     is PlayServicesDriveAuth.Begin.Granted -> finishConnect(begin.token)
                 }
@@ -208,9 +213,13 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
         driveCheck = CheckState.Failed(context.getString(R.string.sync_drive_no_consent))
     }
 
-    /** Google's account/consent screen closed with [resultCode] and [data]. */
-    fun onDriveConsent(resultCode: Int, data: Intent?) {
+    /**
+     * Google's account/consent screen closed with [resultCode] and [data]. [enableFor] is the
+     * output the user tapped, kept by the screen (this view model may be new after process death).
+     */
+    fun onDriveConsent(resultCode: Int, data: Intent?, enableFor: SyncKind? = null) {
         driveConsent = null
+        if (enableFor != null) driveFor = enableFor
         if (data == null) {
             driveFor = null
             driveCheck = CheckState.Failed(context.getString(R.string.sync_drive_cancelled))
@@ -261,11 +270,23 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
         driveCheck = CheckState.Running
         viewModelScope.launch {
             val r = graph.sync.testDrive()
+            val cause = r.exceptionOrNull()?.cause
+            if (cause is DriveException.NeedsSignIn || cause is DriveException.Unauthorized) {
+                // Google wants the user to approve again: show its screen right away.
+                driveCheck = CheckState.Idle
+                connectDrive(enableFor = null)
+                return@launch
+            }
             driveCheck = r.fold({ CheckState.Ok(it) }, { e ->
                 if (e.cause is DriveException.NotSetUp) driveNeedsSetup = true
                 CheckState.Failed(e.message ?: context.getString(R.string.sync_drive_unavailable))
             })
         }
+    }
+
+    /** The user closed the setup steps that opened by themselves. */
+    fun hideDriveSetup() {
+        driveNeedsSetup = false
     }
 
     /** Where "Open Drive in browser" goes: the Inkwell folder once it exists. */

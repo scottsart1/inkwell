@@ -338,6 +338,11 @@ class FakeDrive : DriveApi {
         return node.toItem()
     }
 
+    override suspend fun trash(id: String) {
+        step("trash")
+        nodes[id]?.trashed = true
+    }
+
     /** "Inkwell/Economics/Term 1/Title/notes.pdf" for a live node. */
     fun path(id: String): String {
         val node = nodes.getValue(id)

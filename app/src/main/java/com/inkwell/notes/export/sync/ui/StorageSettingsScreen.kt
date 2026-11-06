@@ -65,6 +65,8 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
     val prefs = settings.destinations
 
     var folderFor by rememberSaveable { mutableStateOf<String?>(null) }
+    // The output whose Drive chip started the connection: survives process death during consent.
+    var driveFor by rememberSaveable { mutableStateOf<String?>(null) }
     var restoreUri by rememberSaveable { mutableStateOf<String?>(null) }
     val pickerMissing = stringResource(R.string.sync_no_picker)
 
@@ -83,7 +85,9 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
         if (uri != null) vm.enableAutoBackup(uri)
     }
     val driveConsent = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        vm.onDriveConsent(result.resultCode, result.data)
+        val kind = driveFor?.let { runCatching { SyncKind.valueOf(it) }.getOrNull() }
+        driveFor = null
+        vm.onDriveConsent(result.resultCode, result.data, kind)
     }
     // Google's account and consent screen, when the view model asks for it.
     val consent = vm.driveConsent
@@ -122,6 +126,7 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
                             folderFor = kind.name
                             launchTree(folderPicker, null)
                         } else if (target == OutputTarget.DRIVE && on && prefs.driveAccount == null) {
+                            driveFor = kind.name
                             vm.connectDrive(enableFor = kind)
                         } else {
                             vm.setTarget(kind, target, on)
@@ -140,7 +145,8 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
                     check = vm.driveCheck,
                     setup = vm.driveSetup,
                     setupOpen = vm.driveNeedsSetup,
-                    onConnect = { vm.connectDrive(enableFor = null) },
+                    onConnect = { driveFor = null; vm.connectDrive(enableFor = null) },
+                    onHideSetup = vm::hideDriveSetup,
                     onTest = vm::testDrive,
                     onDisconnect = vm::disconnectDrive,
                     onOpenDrive = {

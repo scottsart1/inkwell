@@ -90,6 +90,7 @@ internal fun DriveCard(
     onDisconnect: () -> Unit,
     onOpenDrive: () -> Unit,
     onCopied: (String) -> Unit,
+    onHideSetup: () -> Unit = {},
 ) {
     val c = Inkwell.colors
     val account = prefs.driveAccount
@@ -116,6 +117,8 @@ internal fun DriveCard(
                 PrimaryAction(stringResource(if (busy) R.string.sync_drive_connecting else R.string.sync_drive_connect), onConnect, busy = busy)
             } else {
                 SecondaryAction(stringResource(if (busy) R.string.sync_testing else R.string.sync_folder_test), onTest, busy = busy)
+                // Google may ask again (access withdrawn, password changed, Testing-mode expiry).
+                QuietAction(stringResource(R.string.sync_drive_reconnect), onConnect, enabled = !busy)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     QuietAction(stringResource(R.string.sync_drive_open), onOpenDrive)
                     Icon(Icons.AutoMirrored.Outlined.OpenInNew, null, Modifier.size(16.dp), tint = c.accent)
@@ -131,7 +134,14 @@ internal fun DriveCard(
             val open = showSetup || setupOpen
             QuietAction(
                 stringResource(if (open) R.string.sync_drive_setup_hide else R.string.sync_drive_setup_show),
-                { showSetup = !open },
+                {
+                    if (open) {
+                        showSetup = false
+                        onHideSetup()
+                    } else {
+                        showSetup = true
+                    }
+                },
                 color = c.accent,
             )
             if (open) DriveSetupSteps(setup, onCopied)
