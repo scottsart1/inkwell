@@ -46,8 +46,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -75,20 +77,29 @@ import kotlinx.coroutines.delay
 private val MaxContentWidth = 960.dp
 private val WideBreakpoint = 600.dp
 
+/** Which result cards are expanded (only the expanded document ids are stored). */
+private val ExpandedSaver = listSaver<SnapshotStateMap<String, Boolean>, String>(
+    save = { map -> map.filterValues { it }.keys.toList() },
+    restore = { ids -> mutableStateMapOf<String, Boolean>().apply { ids.forEach { put(it, true) } } },
+)
+
 /** Library-wide search across titles, typed text, handwriting, OCR, PDFs and transcripts. Works offline. */
 @Composable
 fun SearchScreen(initialQuery: String, nav: AppNavigator) {
     val context = LocalContext.current
     val graph = remember(context) { AppGraph.get(context) }
-    val vm: SearchViewModel = viewModel { SearchViewModel(graph, initialQuery) }
+    // Saved with the screen: after process death the field comes back with what was typed, and the
+    // new view model starts from that text, so the results match the field.
+    var text by rememberSaveable { mutableStateOf(initialQuery) }
+    val vm: SearchViewModel = viewModel { SearchViewModel(graph, text) }
     val state by vm.state.collectAsStateWithLifecycle()
     val c = Inkwell.colors
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = remember { FocusRequester() }
     val snackbar = remember { SnackbarHostState() }
-    val expanded = remember { mutableStateMapOf<String, Boolean>() }
-    var text by rememberSaveable { mutableStateOf(vm.state.value.query) }
-    var resumedOnce by remember { mutableStateOf(false) }
+    // Saveable: this screen leaves the composition while a result is open, and comes back to it.
+    val expanded = rememberSaveable(saver = ExpandedSaver) { mutableStateMapOf<String, Boolean>() }
+    var resumedOnce by rememberSaveable { mutableStateOf(false) }
 
     fun setQuery(q: String) {
         text = q
@@ -240,7 +251,13 @@ private fun Results(
     val c = Inkwell.colors
     val listState = rememberLazyListState()
     val terms = state.terms
-    LaunchedEffect(state.searchedQuery, state.filter) { listState.scrollToItem(0) }
+    // A new query or filter starts at the top; coming back from an opened result keeps the place.
+    var shownFor by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(state.searchedQuery, state.filter) {
+        val key = state.filter.name + ":" + state.searchedQuery
+        if (shownFor != null && shownFor != key) listState.scrollToItem(0)
+        shownFor = key
+    }
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
