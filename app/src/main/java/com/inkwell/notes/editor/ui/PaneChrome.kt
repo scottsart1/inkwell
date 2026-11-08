@@ -11,6 +11,7 @@ import androidx.compose.material.icons.outlined.CenterFocusWeak
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.PostAdd
@@ -32,6 +33,8 @@ import com.inkwell.notes.core.model.AutoNameStatus
 import com.inkwell.notes.core.model.ScrollDirection
 import com.inkwell.notes.core.naming.DateNaming
 import com.inkwell.notes.editor.EditorSession
+import com.inkwell.notes.export.email.WorkEmailLauncher
+import com.inkwell.notes.export.email.rememberWorkEmail
 import com.inkwell.notes.editor.NotebookController
 import com.inkwell.notes.editor.copyPageTextToClipboard
 import com.inkwell.notes.editor.logic.PageRanges
@@ -54,6 +57,8 @@ fun PaneChrome(
     settings: AppSettings,
     aiNamingAvailable: Boolean,
 ) {
+    // Kept across focus mode so an email being prepared still opens.
+    val workEmail = rememberWorkEmail()
     if (mode == PaneMode.FULL && ui.focusMode) return
     val doc = controller.doc
     val (x, n) = PageRanges.displayPosition(controller.currentPage, controller.pages.size)
@@ -72,7 +77,7 @@ fun PaneChrome(
         if (ui.right == RightPanel.RECORDINGS) add(TopBarAction.RECORDINGS)
     }
     val onAction: (TopBarAction) -> Unit = { a -> topBarAction(a, controller, ui) }
-    val overflow = overflowItems(controller, ui, actions, mode, folded, settings, aiNamingAvailable)
+    val overflow = overflowItems(controller, ui, actions, mode, folded, settings, aiNamingAvailable, workEmail)
 
     EditorTopBar(
         title = doc?.title.orEmpty(),
@@ -134,6 +139,7 @@ private fun overflowItems(
     folded: List<TopBarAction>,
     settings: AppSettings,
     aiNamingAvailable: Boolean,
+    workEmail: WorkEmailLauncher,
 ): List<MenuItemSpec> {
     val page = controller.currentPageMeta
     val items = mutableListOf<MenuItemSpec>()
@@ -141,6 +147,10 @@ private fun overflowItems(
     items += MenuItemSpec(stringResource(if (aiNamingAvailable) R.string.editor_suggest_name_ai else R.string.editor_suggest_name), Icons.Outlined.AutoAwesome, 0) { actions.suggestName() }
     folded.forEach { a ->
         items += MenuItemSpec(stringResource(topBarLabel(a)), topBarIcon(a), 1) { topBarAction(a, controller, ui) }
+    }
+    // Edits still in memory are saved first so the email has the latest ink.
+    items += MenuItemSpec(stringResource(R.string.work_email_action), Icons.Outlined.Email, 1, enabled = controller.doc != null && !workEmail.busy) {
+        workEmail.sendDocument(controller.docId) { controller.saveNow() }
     }
     items += MenuItemSpec(stringResource(R.string.editor_add_page), Icons.Outlined.PostAdd, 2) { controller.addPage() }
     items += MenuItemSpec(stringResource(R.string.editor_paper_and_size), Icons.Outlined.Texture, 2, enabled = page != null) {

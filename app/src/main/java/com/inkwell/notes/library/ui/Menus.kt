@@ -10,6 +10,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
+import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.Palette
@@ -23,7 +24,7 @@ import androidx.compose.ui.res.stringResource
 import com.inkwell.notes.R
 import com.inkwell.notes.core.model.DocumentMeta
 
-internal enum class DocAction { OPEN, SPLIT, RENAME, SUGGEST_NAME, FAVORITE, PIN, MOVE, DUPLICATE, TAGS, ARCHIVE, EXPORT, DELETE }
+internal enum class DocAction { OPEN, SPLIT, RENAME, SUGGEST_NAME, FAVORITE, PIN, MOVE, DUPLICATE, TAGS, ARCHIVE, EXPORT, EMAIL_WORK, DELETE }
 
 internal enum class FolderAction { OPEN, RENAME, APPEARANCE, NEW_INSIDE, MOVE, DELETE }
 
@@ -58,6 +59,7 @@ internal fun DocumentMenuItems(doc: DocumentMeta, aiNaming: Boolean, onAction: (
         { onAction(DocAction.ARCHIVE) },
     )
     LibMenuItem(stringResource(R.string.lib_action_export), Icons.Outlined.IosShare, { onAction(DocAction.EXPORT) })
+    LibMenuItem(stringResource(R.string.work_email_action), Icons.Outlined.Email, { onAction(DocAction.EMAIL_WORK) })
     MenuDivider()
     LibMenuItem(stringResource(R.string.lib_action_delete), Icons.Outlined.Delete, { onAction(DocAction.DELETE) }, destructive = true)
 }

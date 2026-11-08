@@ -62,6 +62,7 @@ import com.inkwell.notes.R
 import com.inkwell.notes.app.AppNavigator
 import com.inkwell.notes.app.SettingsSection
 import com.inkwell.notes.core.model.DocKind
+import com.inkwell.notes.export.email.rememberWorkEmail
 import com.inkwell.notes.export.ui.ExportDialog
 import com.inkwell.notes.library.ItemSet
 import com.inkwell.notes.library.LibraryCollection
@@ -98,6 +99,8 @@ internal fun LibraryHome(vm: LibraryViewModel, nav: AppNavigator) {
     val resources = LocalContext.current.resources
     val controller = remember(vm, nav) { LibraryController(vm, nav, resources) }
     controller.state = state
+    val workEmail = rememberWorkEmail()
+    controller.emailToWork = { workEmail.sendDocument(it) }
     val drag = remember { DragDropState() }
     drag.canDrop = controller::canDrop
     val launchers = rememberLibraryLaunchers(vm)

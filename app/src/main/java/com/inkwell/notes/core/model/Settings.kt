@@ -188,6 +188,11 @@ data class DestinationPrefs(
      * by default; turning it off withdraws the link.
      */
     val driveShareLink: Boolean = false,
+    /**
+     * The user's own work email address for "Email to work" (notes and transcripts go there from
+     * the tablet's mail app, for a work computer that can't open Google). Blank = not set yet.
+     */
+    val workEmail: String = "",
     /** Push automatically after edits settle; otherwise only on "Sync now". */
     val autoSync: Boolean = true,
     val audioOnUnmeteredOnly: Boolean = true,

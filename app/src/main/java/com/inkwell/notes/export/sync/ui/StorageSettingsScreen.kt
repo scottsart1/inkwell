@@ -171,6 +171,7 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
                     },
                     onCopied = { vm.notice = null },
                 )
+                WorkEmailCard(saved = prefs.workEmail, onSave = vm::setWorkEmail)
                 SyncCard(
                     prefs = prefs,
                     status = status,

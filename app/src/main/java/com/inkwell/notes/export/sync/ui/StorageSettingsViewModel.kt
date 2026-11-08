@@ -22,6 +22,7 @@ import com.inkwell.notes.export.SyncManagerImpl
 import com.inkwell.notes.export.SyncStatus
 import com.inkwell.notes.export.backup.AutoBackupStatus
 import com.inkwell.notes.export.backup.BackupPrefs
+import com.inkwell.notes.export.email.WorkEmail
 import com.inkwell.notes.export.sync.DriveException
 import com.inkwell.notes.export.sync.PlayServicesDriveAuth
 import com.inkwell.notes.export.sync.SafFolderAccess
@@ -153,6 +154,9 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
     fun setFormat(format: NotesExportFormat) = updateDestinations { it.copy(notesFormat = format) }
     fun setAutoSync(on: Boolean) = updateDestinations { it.copy(autoSync = on) }
     fun setAudioWifiOnly(on: Boolean) = updateDestinations { it.copy(audioOnUnmeteredOnly = on) }
+
+    /** The work address for "Email to work" (already checked by the card); blank clears it. */
+    fun setWorkEmail(address: String) = updateDestinations { it.copy(workEmail = WorkEmail.normalize(address)) }
 
     private fun updateDestinations(transform: (DestinationPrefs) -> DestinationPrefs) {
         viewModelScope.launch { graph.settings.update { it.copy(destinations = transform(it.destinations)) } }
