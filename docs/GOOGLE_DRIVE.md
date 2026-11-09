@@ -63,8 +63,37 @@ Anyone who has the link can view (not change) everything in the folder, and work
 usually log the addresses they visit, so it is off by default. Turning it off withdraws the link
 straight away. Try signing in at drive.google.com first; you only need the link if that fails.
 
+Some companies block every Google site, signed in or not. Then use **Email to work** (below).
+
+## Email to work (no Google needed on the work computer)
+
+Send a note or a transcript to your own work email address and read it in your work inbox.
+
+1. On the tablet, tap **Email to work**:
+   - in the library: a note's three-dot menu;
+   - in the editor: the **More** menu;
+   - in the recordings panel: a recording's menu (**Email transcript to work**, once it is
+     transcribed).
+2. The first time, Inkwell asks for your work address and remembers it (change it later in
+   **Settings › Storage, sync & backup › Email to work**).
+3. Your mail app (Gmail, Samsung Email, Outlook...) opens with the email ready: addressed to you,
+   subject filled in. Tap **Send**. Nothing is sent before that.
+
+What arrives:
+
+- **A note**: the recognised text (typed text, handwriting, OCR) and every transcript of the note
+  in the email itself, plus the notes as a PDF (handwriting and drawings as you see them) and a
+  Word file (text, pages and transcripts) attached.
+- **A recording**: its transcript in the email, with times and speakers, plus a Word file.
+
+The text is in the email body so it can be read even where a mail filter removes attachments.
+Very long text (over about 100,000 characters) stops with a note that the rest is in the Word
+file. Inkwell itself sends nothing over the network for this: the tablet's mail app sends the
+email from the account you use there.
+
 ## Without Google Drive
 
+- **Email to work**: see above; no Google account is involved on the work computer.
 - **Folder**: copies the same files into a folder on the tablet or an SD card. Any app that syncs
   a folder to a cloud service can pick them up from there.
 - **Export / Share**: any note or transcript can be exported (PDF, Word, Markdown, text) from the
@@ -79,3 +108,9 @@ to recognise Inkwell's own files); `DriveLayout.kt` maps documents to folders;
 `sync_queue`, retried with backoff, blocked (not failed) while the account needs attention.
 The app signing key is `app/inkwell.keystore` (alias `inkwell`); the SHA-1 above is its
 certificate.
+
+"Email to work" is `export/email/`: `WorkEmail` (pure text building, unit-tested),
+`WorkEmailSender` (exports the PDF, Word and plain text, builds an `ACTION_SEND` intent with a
+`mailto:` selector so only mail apps answer, attachments granted read-only through the
+FileProvider) and `WorkEmailUi` (`rememberWorkEmail()`, the address prompt). The address is
+`DestinationPrefs.workEmail`.

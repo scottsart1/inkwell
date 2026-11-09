@@ -51,6 +51,9 @@ internal class LibraryController(
 ) {
     var dialog by mutableStateOf<LibraryDialog?>(null)
 
+    /** "Email to work" for one document; set by the screen. */
+    var emailToWork: (String) -> Unit = {}
+
     /** Latest UI state; updated by the screen on every recomposition. */
     var state: LibraryUiState = LibraryUiState()
 
@@ -133,6 +136,7 @@ internal class LibraryController(
             DocAction.TAGS -> dialog = LibraryDialog.Tags(doc)
             DocAction.ARCHIVE -> vm.setArchived(listOf(doc.id), !doc.archived)
             DocAction.EXPORT -> dialog = LibraryDialog.ExportOne(doc.id)
+            DocAction.EMAIL_WORK -> emailToWork(doc.id)
             DocAction.DELETE -> vm.trash(ItemSet(documentIds = setOf(doc.id)))
         }
     }

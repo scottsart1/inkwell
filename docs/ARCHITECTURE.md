@@ -104,6 +104,14 @@ or password is stored. `DriveClient` speaks Drive v3 over OkHttp; `DriveLayout` 
 folders and files by private app properties, so renames and moves follow the document. The
 one-time Google Cloud registration is described in `docs/GOOGLE_DRIVE.md`.
 
+## Email to work
+
+`export/email/` opens the tablet's mail app with a note or transcript addressed to the user's
+work address (`DestinationPrefs.workEmail`): text in the body (`WorkEmail`, plain Kotlin), the
+PDF and Word exports attached (`WorkEmailSender`). Entry points: the library item menu
+(`DocAction.EMAIL_WORK`), the editor's More menu and the recording menu; all use
+`rememberWorkEmail()`, which asks for the address once.
+
 ## Threading
 
 - UI on Main. Disk and network on `Dispatchers.IO`. CPU work on `Dispatchers.Default`.

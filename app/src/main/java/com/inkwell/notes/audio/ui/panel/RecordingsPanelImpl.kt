@@ -67,6 +67,9 @@ import com.inkwell.notes.core.model.Recording
 import com.inkwell.notes.core.model.RecordingSpeaker
 import com.inkwell.notes.core.model.RecordingStatus
 import com.inkwell.notes.core.model.SpeakerEngine
+import com.inkwell.notes.core.model.TranscriptStatus
+import com.inkwell.notes.export.email.WorkEmailLauncher
+import com.inkwell.notes.export.email.rememberWorkEmail
 import com.inkwell.notes.speakers.ui.logic.LaneGeometry
 import com.inkwell.notes.speakers.ui.logic.SpeakerLanes
 import com.inkwell.notes.speakers.ui.logic.SpeakerTranscript
@@ -88,6 +91,7 @@ internal fun RecordingsPanelImpl(
     val selected by vm.selected.collectAsStateWithLifecycle()
     val c = Inkwell.colors
     val phone = LocalConfiguration.current.screenWidthDp < 600
+    val workEmail = rememberWorkEmail()
 
     BackHandler(enabled = selected != null) { vm.select(null) }
 
@@ -98,7 +102,7 @@ internal fun RecordingsPanelImpl(
                 if (!phone) VerticalDivider(color = c.outline, thickness = 1.dp)
                 Box(Modifier.fillMaxSize().imePadding()) {
                     val rec = selected
-                    if (rec == null) ListContent(vm, onClose) else DetailContent(vm, rec, onShowNotesAt, onClose)
+                    if (rec == null) ListContent(vm, workEmail, onClose) else DetailContent(vm, rec, workEmail, onShowNotesAt, onClose)
                     PanelMessage(vm, Modifier.align(Alignment.BottomCenter))
                 }
             }
@@ -148,7 +152,7 @@ private fun rememberLive(vm: RecordingsViewModel): State<LiveInfo?> {
 }
 
 @Composable
-private fun ListContent(vm: RecordingsViewModel, onClose: () -> Unit) {
+private fun ListContent(vm: RecordingsViewModel, workEmail: WorkEmailLauncher, onClose: () -> Unit) {
     val context = LocalContext.current
     val recordings by vm.recordings.collectAsStateWithLifecycle()
     val loaded by vm.loaded.collectAsStateWithLifecycle()
@@ -186,6 +190,7 @@ private fun ListContent(vm: RecordingsViewModel, onClose: () -> Unit) {
                         onCancelRename = { vm.renamingId = null },
                         onExport = { vm.export(rec) { intent -> launchShare(context, intent, vm) } },
                         onDelete = { vm.requestDelete(rec) },
+                        onEmail = { workEmail.sendRecording(rec.id) },
                     )
                 }
             }
@@ -218,6 +223,7 @@ private fun EmptyState() {
 private fun DetailContent(
     vm: RecordingsViewModel,
     rec: Recording,
+    workEmail: WorkEmailLauncher,
     onShowNotesAt: (String, Long) -> Unit,
     onClose: () -> Unit,
 ) {
@@ -278,6 +284,7 @@ private fun DetailContent(
                         onRename = { vm.renamingId = rec.id },
                         onExport = { vm.export(rec) { intent -> launchShare(context, intent, vm) } },
                         onDelete = { vm.requestDelete(rec) },
+                        onEmail = { workEmail.sendRecording(rec.id) }.takeIf { active == null && rec.transcriptStatus == TranscriptStatus.DONE },
                     )
                 },
             )

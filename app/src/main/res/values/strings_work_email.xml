@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "Email to work" (export/email). -->
+<resources>
+    <string name="work_email_action">Email to work</string>
+    <string name="work_email_transcript_action">Email transcript to work</string>
+    <string name="work_email_preparing">Preparing the email…</string>
+    <string name="work_email_failed">The email couldn\'t be prepared. Try again.</string>
+    <string name="work_email_no_transcript">This recording has no transcript yet.</string>
+    <string name="work_email_no_app">No mail app is available on this tablet.</string>
+    <string name="work_email_address">Work email address</string>
+    <string name="work_email_invalid">Enter an email address, like name@company.com.</string>
+    <string name="work_email_ask_title">Where should it go?</string>
+    <string name="work_email_ask_body">Your mail app opens with the email ready to send to this address. Nothing is sent until you tap Send there. You can change it in Settings › Storage, sync &amp; backup.</string>
+    <string name="work_email_ask_save">Save and continue</string>
+    <string name="work_email_cancel">Cancel</string>
+    <string name="work_email_title">Email to work</string>
+    <string name="work_email_subtitle">For a work computer that can\'t open Google. Tap Email to work in a note\'s three-dot menu in the library, in the editor\'s More menu or in a recording\'s menu: your mail app opens with the text in the email and the notes attached as PDF and Word files. Nothing is sent until you tap Send.</string>
+    <string name="work_email_save">Save</string>
+    <string name="work_email_saved">Saved.</string>
+</resources>

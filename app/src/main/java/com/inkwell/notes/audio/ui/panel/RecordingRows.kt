@@ -22,6 +22,7 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.MoreVert
@@ -75,6 +76,7 @@ internal fun RecordingRow(
     onExport: () -> Unit,
     onDelete: () -> Unit,
     newVoices: Boolean = false,
+    onEmail: (() -> Unit)? = null,
 ) {
     val c = Inkwell.colors
     Row(
@@ -106,6 +108,7 @@ internal fun RecordingRow(
                 onRename = onStartRename,
                 onExport = onExport,
                 onDelete = onDelete,
+                onEmail = onEmail.takeIf { liveElapsedMs == null && rec.transcriptStatus == TranscriptStatus.DONE },
             )
         }
     }
@@ -159,7 +162,15 @@ internal fun RenameField(current: String, onRename: (String) -> Unit, onCancel: 
 }
 
 @Composable
-internal fun RecordingMenu(exporting: Boolean, canExport: Boolean, onRename: () -> Unit, onExport: () -> Unit, onDelete: () -> Unit) {
+internal fun RecordingMenu(
+    exporting: Boolean,
+    canExport: Boolean,
+    onRename: () -> Unit,
+    onExport: () -> Unit,
+    onDelete: () -> Unit,
+    /** "Email transcript to work"; null hides it (no finished transcript). */
+    onEmail: (() -> Unit)? = null,
+) {
     val c = Inkwell.colors
     var open by remember { mutableStateOf(false) }
     Box {
@@ -176,6 +187,13 @@ internal fun RecordingMenu(exporting: Boolean, canExport: Boolean, onRename: () 
                 enabled = canExport && !exporting,
                 onClick = { open = false; onExport() },
             )
+            if (onEmail != null) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.work_email_transcript_action), color = c.ink) },
+                    leadingIcon = { Icon(Icons.Outlined.Email, null, Modifier.size(Dimens.icon), tint = c.inkMuted) },
+                    onClick = { open = false; onEmail() },
+                )
+            }
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.audio_delete), color = c.danger) },
                 leadingIcon = { Icon(Icons.Outlined.Delete, null, Modifier.size(Dimens.icon), tint = c.danger) },
