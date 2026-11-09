@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.graphics.PointF
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -109,6 +110,7 @@ import com.inkwell.notes.whiteboard.ui.StickyEditor
 import com.inkwell.notes.whiteboard.ui.TextBoxEditor
 import com.inkwell.notes.whiteboard.ui.ZoomControls
 import com.inkwell.notes.whiteboard.ui.toolLabel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -243,7 +245,16 @@ private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigato
         scope.launch {
             controller.busy = R.string.wb_reading_board
             try {
-                aiContext = controller.ops.aiContext()
+                // Reading the board must never take the app down: without it the assistant
+                // still opens on the whole document.
+                aiContext = try {
+                    controller.ops.aiContext()
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    Log.w("Whiteboard", "Board context failed (${t.javaClass.simpleName})")
+                    AiPanelContext(controller.docId, pageId = controller.page?.id, pageIndex = 0)
+                }
                 panel = SidePanel.AI
             } finally {
                 controller.busy = null
