@@ -69,6 +69,7 @@
     <string name="wb_redo">Redo</string>
     <string name="wb_pdf_snippet">Insert PDF snippet</string>
     <string name="wb_ai">Ask the assistant</string>
+    <string name="wb_action_failed">That didn\'t work. Try again.</string>
     <string name="wb_export_area">Export area</string>
     <string name="wb_side_button_held">Side button held · %1$s</string>
     <string name="wb_tool_options">%1$s options</string>

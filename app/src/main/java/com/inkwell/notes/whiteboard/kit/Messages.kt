@@ -7,7 +7,11 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 
 /** A user-visible message, resolved from string resources at display time. */
 data class UiMessage(
@@ -32,5 +36,19 @@ fun CollectMessages(messages: Flow<UiMessage>, host: SnackbarHostState) {
             )
             if (result == SnackbarResult.ActionPerformed) m.onAction?.invoke()
         }
+    }
+}
+
+/**
+ * [launch] for a user action: a failure goes to [onError] instead of ending the process, and,
+ * unlike a scope-wide handler, leaves the scope alive for the next action. Cancellation passes.
+ */
+fun CoroutineScope.launchCatching(onError: (Throwable) -> Unit, block: suspend CoroutineScope.() -> Unit): Job = launch {
+    try {
+        block()
+    } catch (c: CancellationException) {
+        throw c
+    } catch (t: Throwable) {
+        onError(t)
     }
 }

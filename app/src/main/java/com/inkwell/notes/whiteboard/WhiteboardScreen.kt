@@ -90,6 +90,7 @@ import com.inkwell.notes.whiteboard.kit.PillSurface
 import com.inkwell.notes.whiteboard.kit.RenameDialog
 import com.inkwell.notes.whiteboard.kit.SlimTopBar
 import com.inkwell.notes.whiteboard.kit.UiMessage
+import com.inkwell.notes.whiteboard.kit.launchCatching
 import com.inkwell.notes.whiteboard.logic.BoardAnchors
 import com.inkwell.notes.whiteboard.logic.ExportMath
 import com.inkwell.notes.whiteboard.ui.AddNotebookPageDialog
@@ -181,6 +182,12 @@ private fun TopBarFrame(content: @Composable () -> Unit) {
 private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigator) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // A failed board action (AI, paste, image, export...) shows a message; it never closes the
+    // app, and the screen's scope stays alive for the next one.
+    val onActionFailed: (Throwable) -> Unit = { t ->
+        Log.w("Whiteboard", "Board action failed (${t.javaClass.simpleName})", t)
+        controller.messages.tryEmit(UiMessage(R.string.wb_action_failed))
+    }
     val graph = controller.graph
     val settings by graph.settings.settings.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -201,7 +208,7 @@ private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigato
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         val at = controller.imageTarget
         controller.imageTarget = null
-        if (uri != null) scope.launch { controller.ops.insertPickedImage(context, uri, at) }
+        if (uri != null) scope.launchCatching(onActionFailed) { controller.ops.insertPickedImage(context, uri, at) }
     }
     LaunchedEffect(controller) {
         controller.imageRequests.collect {
@@ -216,7 +223,7 @@ private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigato
         val path = pendingExportPath
         pendingExportPath = null
         if (uri != null) {
-            scope.launch {
+            scope.launchCatching(onActionFailed) {
                 val file = withContext(Dispatchers.IO) { path?.let { File(it) }?.takeIf { it.isFile } }
                 if (file == null) {
                     // The rendered image is gone: remove the empty document the picker created,
@@ -231,7 +238,7 @@ private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigato
                         }
                     }
                     controller.messages.tryEmit(UiMessage(R.string.cd_file_save_failed))
-                    return@launch
+                    return@launchCatching
                 }
                 runCatching { FileSharing.copyTo(context, file, uri) }
                     .onSuccess { controller.messages.tryEmit(UiMessage(R.string.cd_file_saved)) }
@@ -242,7 +249,7 @@ private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigato
 
     fun openAi() {
         if (controller.busy != null) return
-        scope.launch {
+        scope.launchCatching(onActionFailed) {
             controller.busy = R.string.wb_reading_board
             try {
                 // Reading the board must never take the app down: without it the assistant
@@ -414,7 +421,7 @@ private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigato
                         LongPressMenu(
                             request = req,
                             canPaste = controller.ops.canPaste(),
-                            onPaste = { scope.launch { controller.ops.paste(PointF(req.pageX, req.pageY)) } },
+                            onPaste = { scope.launchCatching(onActionFailed) { controller.ops.paste(PointF(req.pageX, req.pageY)) } },
                             onSticky = { controller.addStickyAt(req.pageX, req.pageY) },
                             onText = { controller.startTextAt(req.pageX, req.pageY) },
                             onImage = { controller.requestImage(PointF(req.pageX, req.pageY)) },
@@ -426,7 +433,7 @@ private fun WhiteboardContent(controller: WhiteboardController, nav: AppNavigato
                         ExportAreaOverlay(
                             busy = controller.busy != null,
                             onExport = { rect, action ->
-                                scope.launch {
+                                scope.launchCatching(onActionFailed) {
                                     val file = controller.ops.exportArea(rect, canvasSize.width.toFloat(), canvasSize.height.toFloat())
                                     if (file != null) {
                                         exportMode = false

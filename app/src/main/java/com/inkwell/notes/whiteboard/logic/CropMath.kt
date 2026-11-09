@@ -42,19 +42,25 @@ object CropMath {
         var l = r.left; var t = r.top; var rt = r.right; var b = r.bottom
         when (handle) {
             CropHandle.MOVE -> {
-                val mx = dx.coerceIn(-l, 1f - rt)
-                val my = dy.coerceIn(-t, 1f - b)
+                val mx = dx.clampSafe(-l, 1f - rt)
+                val my = dy.clampSafe(-t, 1f - b)
                 return Box(l + mx, t + my, rt + mx, b + my)
             }
             CropHandle.NONE -> return r
             else -> Unit
         }
-        if (handle == CropHandle.TOP_LEFT || handle == CropHandle.BOTTOM_LEFT || handle == CropHandle.LEFT) l = (l + dx).coerceIn(0f, rt - minSize)
-        if (handle == CropHandle.TOP_RIGHT || handle == CropHandle.BOTTOM_RIGHT || handle == CropHandle.RIGHT) rt = (rt + dx).coerceIn(l + minSize, 1f)
-        if (handle == CropHandle.TOP_LEFT || handle == CropHandle.TOP_RIGHT || handle == CropHandle.TOP) t = (t + dy).coerceIn(0f, b - minSize)
-        if (handle == CropHandle.BOTTOM_LEFT || handle == CropHandle.BOTTOM_RIGHT || handle == CropHandle.BOTTOM) b = (b + dy).coerceIn(t + minSize, 1f)
+        if (handle == CropHandle.TOP_LEFT || handle == CropHandle.BOTTOM_LEFT || handle == CropHandle.LEFT) l = (l + dx).clampSafe(0f, rt - minSize)
+        if (handle == CropHandle.TOP_RIGHT || handle == CropHandle.BOTTOM_RIGHT || handle == CropHandle.RIGHT) rt = (rt + dx).clampSafe(minOf(l + minSize, 1f), 1f)
+        if (handle == CropHandle.TOP_LEFT || handle == CropHandle.TOP_RIGHT || handle == CropHandle.TOP) t = (t + dy).clampSafe(0f, b - minSize)
+        if (handle == CropHandle.BOTTOM_LEFT || handle == CropHandle.BOTTOM_RIGHT || handle == CropHandle.BOTTOM) b = (b + dy).clampSafe(minOf(t + minSize, 1f), 1f)
         return Box(l, t, rt, b)
     }
+
+    /**
+     * coerceIn that tolerates a range float rounding left a hair empty (a box already at its
+     * smallest size against an edge): the lower bound wins instead of throwing mid-drag.
+     */
+    private fun Float.clampSafe(min: Float, max: Float): Float = if (max < min) min else coerceIn(min, max)
 
     /** The crop in pixels of a [width] x [height] image, clamped and at least 1x1. */
     fun toPixels(r: Box, width: Int, height: Int): PixelRect {
