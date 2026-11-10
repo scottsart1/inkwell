@@ -109,8 +109,8 @@ npm run deploy                          # = bash scripts/deploy.sh
 
 ## Using the vault
 
-Open `https://yourpitbox.com/notes/<LINK_ID>` (bookmark it; `www.` works too), enter the
-password and press **Unlock**. The session lasts 30 days on that browser; **Lock** signs
+Open `https://yourpitbox.com/notes` (or the private `https://yourpitbox.com/notes/<LINK_ID>`;
+`www.` works too), enter the password and press **Unlock**. The session lasts 30 days on that browser; **Lock** signs
 out. The page lists synced documents (newest first) with search across titles, recognised
 text and transcripts; selecting one shows the rendered notes, transcripts with clickable
 `[mm:ss]` timestamps that seek the recording, and downloadable files.

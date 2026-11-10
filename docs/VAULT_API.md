@@ -13,10 +13,12 @@ live only in `SecretStore` (Keystore-encrypted), never in settings, backups or e
 BASE = https://yourpitbox.com/notes/<LINK_ID>
 ```
 
-`LINK_ID` is a long random secret (the "special link"). Any request whose path does not
-start with `/notes/<LINK_ID>` gets a plain 404, indistinguishable from a missing page. The
-password is checked on top of that. Neither value is stored in this repository: both are
-Worker secrets (`NOTES_LINK_ID`, `NOTES_PASSWORD`).
+`LINK_ID` is a long random secret (the "special link"); the app uses this base. The same
+page and API are also served at the plain address `https://yourpitbox.com/notes` (API under
+`/notes/api/...`) for browsers on networks that block unfamiliar random-looking paths; there
+the password, with its per-address lockout, is the only guard. Any other path gets a plain
+404. Neither value is stored in this repository: both are Worker secrets (`NOTES_LINK_ID`,
+`NOTES_PASSWORD`). The session cookie has `Path=/notes`, so it works on both entries.
 
 The Worker never redirects, and the app does not follow redirects, so the bearer token cannot
 travel to another server. The one exception is a site moving between `www.host` and `host`.

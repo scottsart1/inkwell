@@ -32,7 +32,7 @@ describe("login", () => {
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("Secure");
     expect(cookie).toContain("SameSite=Strict");
-    expect(cookie).toContain(`Path=/notes/${LINK_ID}`);
+    expect(cookie).toContain("Path=/notes;");
     expect(cookie).toContain("Max-Age=2592000");
   });
 
@@ -210,7 +210,7 @@ describe("tokens", () => {
     const cookie = res.headers.get("Set-Cookie") as string;
     expect(cookie).toMatch(/^nv_session=;/);
     expect(cookie).toContain("Max-Age=0");
-    expect(cookie).toContain(`Path=/notes/${LINK_ID}`);
+    expect(cookie).toContain("Path=/notes;");
     expect(cookie).toContain("HttpOnly");
   });
 });
