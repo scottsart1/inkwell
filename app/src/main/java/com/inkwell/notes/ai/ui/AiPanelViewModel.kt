@@ -124,6 +124,11 @@ internal class AiPanelViewModel(private val graph: AppGraph, val docId: String) 
     private val acknowledged = mutableSetOf<AiProviderId>()
     private var lastAutoSent: AiPanelContext? = null
     private var userPickedModel = false
+    /** Some provider has a key (observable; refreshed with the model list). */
+    var configured by mutableStateOf(false); private set
+
+    // Keep every stored property above this block: viewModelScope runs on Main.immediate, so
+    // the launches below start at once, before any property declared after init exists.
 
     init {
         viewModelScope.launch {
@@ -144,8 +149,6 @@ internal class AiPanelViewModel(private val graph: AppGraph, val docId: String) 
 
     val aiEnabled: Boolean get() = settings.value.ai.enabled
 
-    /** Some provider has a key (observable; refreshed with the model list). */
-    var configured by mutableStateOf(false); private set
 
     fun onSettingsClosed() {
         viewModelScope.launch {
