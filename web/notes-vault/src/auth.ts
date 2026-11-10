@@ -86,8 +86,9 @@ export function getCookie(request: Request, name: string): string | null {
   return null;
 }
 
-function cookiePath(secrets: Secrets): string {
-  return `/notes/${secrets.linkId}`;
+// One path for both entries (/notes and /notes/<link>), so a session works on either.
+function cookiePath(_secrets: Secrets): string {
+  return "/notes";
 }
 
 export function sessionCookie(token: string, secrets: Secrets): string {

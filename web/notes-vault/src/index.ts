@@ -11,18 +11,26 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 /**
  * Routing:
- *   /notes/<NOTES_LINK_ID>            web UI (also with a trailing slash)
- *   /notes/<NOTES_LINK_ID>/api/...    JSON API (docs/VAULT_API.md)
- *   anything else                     plain 404 (the vault is invisible without the link)
+ *   /notes, /notes/                   web UI at the plain address (password only)
+ *   /notes/api/...                    JSON API for that page
+ *   /notes/<NOTES_LINK_ID>            the same web UI under the private link
+ *   /notes/<NOTES_LINK_ID>/api/...    JSON API (docs/VAULT_API.md); what the app uses
+ *   anything else                     plain 404
+ * Both entries take the same password, with the same per-address lockout.
  */
 async function route(request: Request, env: Env, nonce: string): Promise<Response> {
   const url = new URL(request.url);
   const linkId = env.NOTES_LINK_ID ?? "";
-  const match = /^\/notes\/([^/]+)(\/.*)?$/.exec(url.pathname);
-  if (!linkId || !match) return plainNotFound();
-  if (!(await secretEquals(match[1] as string, linkId))) return plainNotFound();
-
-  const rest = match[2] ?? "";
+  if (!linkId) return plainNotFound();
+  let rest: string;
+  if (/^\/notes(\/|\/api(\/.*)?)?$/.test(url.pathname)) {
+    rest = url.pathname.slice("/notes".length);
+  } else {
+    const match = /^\/notes\/([^/]+)(\/.*)?$/.exec(url.pathname);
+    if (!match) return plainNotFound();
+    if (!(await secretEquals(match[1] as string, linkId))) return plainNotFound();
+    rest = match[2] ?? "";
+  }
   const method = request.method.toUpperCase();
 
   if (rest === "" || rest === "/") {

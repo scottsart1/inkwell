@@ -17,9 +17,9 @@ async function expectPlain404(res: Response) {
 describe("routing outside the private link", () => {
   const outside = [
     "/",
-    "/notes",
-    "/notes/",
     "/notesabc",
+    "/notes/apix",
+    "/notesapi/ping",
     "/notes/wrong-link-id",
     "/notes/wrong-link-id/",
     "/notes/wrong-link-id/api/ping",
@@ -87,5 +87,53 @@ describe("ping", () => {
     const res = await call("/api/ping");
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "unauthorized" });
+  });
+});
+
+describe("the plain /notes entry", () => {
+  for (const path of ["/notes", "/notes/"]) {
+    it(`GET ${path} serves the locked page, without the link in it`, async () => {
+      const res = await call(ORIGIN + path);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Content-Type")).toMatch(/^text\/html/);
+      const html = await res.text();
+      expect(html).toContain('id="login-view"');
+      expect(html).not.toContain(LINK_ID);
+    });
+  }
+
+  it("its API needs a session", async () => {
+    expect((await call(`${ORIGIN}/notes/api/ping`)).status).toBe(401);
+    expect((await call(`${ORIGIN}/notes/api/docs`)).status).toBe(401);
+  });
+
+  it("the password signs in there and the cookie works on both entries", async () => {
+    const res = await call(`${ORIGIN}/notes/api/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "CF-Connecting-IP": "10.200.0.1" },
+      body: JSON.stringify({ password: env.NOTES_PASSWORD }),
+    });
+    expect(res.status).toBe(200);
+    const setCookie = res.headers.get("Set-Cookie") ?? "";
+    expect(setCookie).toContain("Path=/notes;");
+    const cookie = setCookie.split(";")[0] as string;
+    expect((await call(`${ORIGIN}/notes/api/docs`, { headers: { Cookie: cookie } })).status).toBe(200);
+    expect((await call(`${BASE}/api/docs`, { headers: { Cookie: cookie } })).status).toBe(200);
+    const page = await (await call(`${ORIGIN}/notes`, { headers: { Cookie: cookie } })).text();
+    expect(page).toContain('data-signed-in="true"');
+  });
+
+  it("a wrong password is refused there too", async () => {
+    const res = await call(`${ORIGIN}/notes/api/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "CF-Connecting-IP": "10.200.0.2" },
+      body: JSON.stringify({ password: "not-the-password" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("a bearer token from the app works on the plain API", async () => {
+    const t = await token();
+    expect((await call(`${ORIGIN}/notes/api/docs`, { headers: bearer(t) })).status).toBe(200);
   });
 });
