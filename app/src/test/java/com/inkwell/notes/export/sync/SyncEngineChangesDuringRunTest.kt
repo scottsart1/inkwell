@@ -35,8 +35,8 @@ class SyncEngineChangesDuringRunTest {
         tmp.deleteRecursively()
     }
 
-    private fun harness(prefs: DestinationPrefs) =
-        EngineHarness(tmp, prefs, cloud, folderRoot = drive).apply {
+    private fun harness(prefs: DestinationPrefs, endpoint: VaultEndpoint? = null) =
+        EngineHarness(tmp, prefs, cloud, folderRoot = drive, endpoint = endpoint).apply {
             source.docs[d.id] = d
             source.folders["f1"] = "Economics" to null
             source.folders["f2"] = "Term 1" to "f1"
@@ -216,6 +216,41 @@ class SyncEngineChangesDuringRunTest {
         assertEquals(0, row.attempts)
     }
 
+    @Test
+    fun `an unreachable vault does not use up the item's attempts`() = runBlocking {
+        val vault = FakeVault()
+        val endpoint = vault.endpoint
+        vault.close()
+        val h = harness(DestinationPrefs(notes = setOf(OutputTarget.VAULT), vaultUrl = "https://v/notes/x", notesFormat = NotesExportFormat.MARKDOWN), endpoint)
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        repeat(3) {
+            val report = h.engine.run()
+            assertTrue(report.retryLater)
+        }
+        val row = h.dao.all.single()
+        assertEquals(SyncItemStatus.PENDING, row.status)
+        assertEquals(0, row.attempts)
+    }
+
+    @Test
+    fun `the vault switched on during a run gets its items copied, not dropped`() = runBlocking {
+        val vault = FakeVault()
+        try {
+            val h = harness(folderPrefs, vault.endpoint)
+            h.engine.enqueue(d.id, SyncKind.NOTES, setOf(OutputTarget.FOLDER))
+            h.engine.enqueue(d.id, SyncKind.NOTES, setOf(OutputTarget.VAULT))
+            // The vault is switched on for notes while the folder copy is being made.
+            h.source.onExport = {
+                h.prefs = h.prefs.copy(notes = setOf(OutputTarget.FOLDER, OutputTarget.VAULT), vaultUrl = "https://v/notes/x")
+            }
+            h.engine.run()
+            assertTrue(h.dao.all.all { it.status == SyncItemStatus.DONE })
+            assertTrue(vault.calls().contains("PUT /api/docs/${d.id}"))
+        } finally {
+            vault.close()
+        }
+    }
+
     // ------------------------------------------------------------------ scheduling
 
     @Test
@@ -229,5 +264,22 @@ class SyncEngineChangesDuringRunTest {
             "a follow-up stuck behind a run in backoff is replaced",
             ExistingWorkPolicy.REPLACE, SyncScheduler.policyFor(listOf(WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED)),
         )
+    }
+
+    // ------------------------------------------------------------------ vault password
+
+    @Test
+    fun `the saved password only goes to the vault it was entered for`() {
+        val a = VaultUrl.endpointOrNull("https://yourpitbox.com/notes/Lk7xQ2pLmn0")!!
+        val b = VaultUrl.endpointOrNull("https://yourpitbox.co/notes/Lk7xQ2pLmn0")!!
+        assertTrue(VaultPassword.fits(a.fingerprint, a, savedLink = b.baseUrl))
+        assertFalse("a new or mistyped link never receives it", VaultPassword.fits(a.fingerprint, b, savedLink = b.baseUrl))
+        assertTrue("not tied yet: the saved link", VaultPassword.fits(null, a, savedLink = a.baseUrl))
+        assertFalse(VaultPassword.fits(null, b, savedLink = a.baseUrl))
+        assertFalse(VaultPassword.fits(null, a, savedLink = ""))
+        val www = VaultUrl.endpointOrNull("https://www.yourpitbox.com/notes/Lk7xQ2pLmn0")!!
+        assertTrue("the same vault on the www host of its site", VaultPassword.fits(a.fingerprint, www, savedLink = ""))
+        assertTrue(VaultPassword.fits(null, a, savedLink = www.baseUrl))
+        assertFalse(VaultPassword.fits(www.fingerprint, VaultUrl.endpointOrNull("https://www.yourpitbox.com/notes/other")!!, savedLink = ""))
     }
 }

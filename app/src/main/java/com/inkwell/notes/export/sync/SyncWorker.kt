@@ -18,13 +18,14 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Background pass over the sync queue. The same worker runs under three unique names with their
- * own network constraint and [SyncScope], so folder copies never wait for a network, Drive uploads
- * wait for any connection, and large audio waits for an unmetered one when the user asked for that.
+ * own network constraint and [SyncScope], so folder copies never wait for a network, Drive and
+ * vault uploads wait for any connection, and large audio waits for an unmetered one when the
+ * user asked for that.
  */
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val manager = AppGraph.get(applicationContext).sync as? SyncManagerImpl ?: return Result.success()
-        val scope = inputData.getString(KEY_SCOPE)?.let { runCatching { SyncScope.valueOf(it) }.getOrNull() } ?: SyncScope.ALL
+        val scope = inputData.getString(KEY_SCOPE)?.let { SyncScope.fromName(it) } ?: SyncScope.ALL
         return try {
             val report = manager.runQueue(scope)
             // After Google asked to slow down a delayed run is already scheduled: no quick retry.
@@ -54,7 +55,7 @@ internal class SyncScheduler(private val context: Context) {
     fun schedule(needs: SyncNeeds) {
         if (needs.local) runSoon(WORK_LOCAL, SyncScope.FOLDER, null)
         if (needs.network) runSoon(WORK_MAIN, SyncScope.ALL, NetworkType.CONNECTED)
-        if (needs.unmetered) runSoon(WORK_AUDIO, SyncScope.DRIVE_AUDIO, NetworkType.UNMETERED)
+        if (needs.unmetered) runSoon(WORK_AUDIO, SyncScope.NETWORK_AUDIO, NetworkType.UNMETERED)
     }
 
     private fun runSoon(name: String, scope: SyncScope, network: NetworkType?) {
@@ -77,7 +78,7 @@ internal class SyncScheduler(private val context: Context) {
         }
     }
 
-    /** One run after [delayMs] (e.g. when Google Drive asked Inkwell to slow down). */
+    /** One run after [delayMs] (e.g. when Google Drive asked Inkwell to slow down, or a vault lockout ends). */
     fun scheduleAfter(delayMs: Long) {
         enqueue(WORK_LATER, SyncScope.ALL, NetworkType.CONNECTED, delayMs.coerceAtLeast(1_000), ExistingWorkPolicy.REPLACE)
     }

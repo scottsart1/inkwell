@@ -1,9 +1,11 @@
 package com.inkwell.notes.export.sync
 
 import com.inkwell.notes.core.model.DestinationPrefs
+import com.inkwell.notes.core.model.NotesExportFormat
 import com.inkwell.notes.core.model.OutputTarget
 import com.inkwell.notes.core.model.TranscriptSegment
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,18 +18,21 @@ import java.nio.file.Files
 class SyncEngineMoveTest {
     private val tmp: File = Files.createTempDirectory("sync-move").toFile()
     private val cloud = FakeDrive()
+    private val vault = FakeVault()
     private val drive = File(tmp, "local").apply { mkdirs() }
     private val d = doc(folderId = "f2")
     private val folderUri = "content://com.android.externalstorage.documents/tree/primary%3ASync"
     private val account = "me@example.com"
+    private val vaultUrl = "https://yourpitbox.com/notes/Lk7xQ2pLmn0"
 
     @After
     fun tearDown() {
+        vault.close()
         tmp.deleteRecursively()
     }
 
     private fun harness(prefs: DestinationPrefs) =
-        EngineHarness(tmp, prefs, cloud, folderRoot = drive).apply {
+        EngineHarness(tmp, prefs, cloud, folderRoot = drive, vault = vault).apply {
             source.docs[d.id] = d
             source.folders["f1"] = "Economics" to null
             source.folders["f2"] = "Term 1" to "f1"
@@ -214,5 +219,141 @@ class SyncEngineMoveTest {
             SyncEngine.targetsFor(SyncKind.NOTES, SyncEngine.DRIVE_MOVE_REF, none.copy(transcripts = setOf(OutputTarget.DRIVE))),
         )
         assertEquals(emptySet<OutputTarget>(), SyncEngine.targetsFor(SyncKind.NOTES, null, none.copy(transcripts = setOf(OutputTarget.DRIVE))))
+    }
+
+    // ------------------------------------------------------------------ vault
+
+    @Test
+    fun `a move sends the vault the new folder path without uploading the notes again`() = runBlocking {
+        vault.docIds += d.id
+        val prefs = DestinationPrefs(notes = setOf(OutputTarget.VAULT), vaultUrl = vaultUrl, notesFormat = NotesExportFormat.PDF_AND_MARKDOWN)
+        val h = harness(prefs)
+        h.move()
+        assertEquals(1, h.engine.enqueueMoved(d.id, prefs))
+        val report = h.engine.run()
+
+        assertEquals(listOf("POST /api/session", "GET /api/docs", "PUT /api/docs/${d.id}"), vault.calls())
+        val put = FakeVault.jsonOf(vault.requests.last())
+        assertEquals("Economics", put["folderPath"]!!.jsonPrimitive.content)
+        assertEquals("the upsert keeps the note text", "# Financial Markets\n\nYield curve notes", put["markdown"]!!.jsonPrimitive.content)
+        assertEquals(0, h.source.pdfExports)
+        assertEquals(1, report.succeeded)
+        assertTrue(h.dao.pendingRows().isEmpty())
+    }
+
+    @Test
+    fun `with only transcripts in the vault a move updates the place and keeps the vault's stored notes`() = runBlocking {
+        // Notes went to the vault before; the upsert must send their text back, not nothing.
+        vault.docIds += d.id
+        vault.markdowns[d.id] = "# Notes the vault keeps"
+        val prefs = DestinationPrefs(transcripts = setOf(OutputTarget.VAULT), vaultUrl = vaultUrl)
+        val h = harness(prefs)
+        h.move()
+        assertEquals(1, h.engine.enqueueMoved(d.id, prefs))
+        h.engine.run()
+
+        val put = FakeVault.jsonOf(vault.requests.last())
+        assertEquals("PUT /api/docs/${d.id}", vault.calls().last())
+        assertEquals("# Notes the vault keeps", put["markdown"]?.jsonPrimitive?.content)
+        assertEquals("# Notes the vault keeps", vault.markdowns[d.id])
+        assertEquals(0, h.source.pdfExports)
+        assertTrue(h.dao.pendingRows().isEmpty())
+    }
+
+    @Test
+    fun `a move never creates a document the vault does not have`() = runBlocking {
+        val prefs = DestinationPrefs(notes = setOf(OutputTarget.VAULT), vaultUrl = vaultUrl)
+        val h = harness(prefs)
+        h.move()
+        h.engine.enqueueMoved(d.id, prefs)
+        h.engine.run()
+        assertEquals(listOf("POST /api/session", "GET /api/docs"), vault.calls())
+        assertTrue(h.dao.pendingRows().isEmpty())
+    }
+
+    @Test
+    fun `with the folder and the vault only the folder gets the notes again`() = runBlocking {
+        val prefs = DestinationPrefs(
+            notes = setOf(OutputTarget.VAULT, OutputTarget.FOLDER), vaultUrl = vaultUrl, folderUri = folderUri,
+        )
+        val h = harness(prefs)
+        h.state.setFolderLocation(folderUri, d.id, listOf("Inkwell", "Economics", "Term 1", d.title))
+        h.move()
+        h.engine.enqueueMoved(d.id, prefs)
+        assertEquals(
+            setOf(
+                Triple(SyncKind.NOTES.name, OutputTarget.FOLDER.name, null),
+                Triple(SyncKind.NOTES.name, OutputTarget.VAULT.name, SyncEngine.VAULT_METADATA_REF),
+            ),
+            h.dao.pendingRows().map { Triple(it.kind, it.target, it.refId) }.toSet(),
+        )
+    }
+
+    @Test
+    fun `notes copied to the vault after the move make the metadata update unnecessary`() = runBlocking {
+        vault.docIds += d.id
+        val prefs = DestinationPrefs(notes = setOf(OutputTarget.VAULT), vaultUrl = vaultUrl, notesFormat = NotesExportFormat.PDF)
+        val h = harness(prefs)
+        h.move()
+        // A rename: the edit path queues the notes, the move path the metadata.
+        h.engine.enqueue(d.id, SyncKind.NOTES, prefs.notes)
+        h.engine.enqueueMoved(d.id, prefs)
+        h.engine.run()
+        assertEquals(listOf("POST /api/session", "PUT /api/docs/${d.id}", "PUT /api/docs/${d.id}/files/notes.pdf"), vault.calls())
+        assertTrue(h.dao.pendingRows().isEmpty())
+    }
+
+    @Test
+    fun `a metadata update is dropped once nothing goes to the vault`() = runBlocking {
+        vault.docIds += d.id
+        val prefs = DestinationPrefs(notes = setOf(OutputTarget.VAULT), transcripts = setOf(OutputTarget.VAULT), vaultUrl = vaultUrl)
+        val h = harness(prefs)
+        assertEquals(1, h.engine.enqueueMoved(d.id, prefs))
+        h.prefs = prefs.copy(notes = emptySet(), transcripts = emptySet())
+        h.engine.run()
+        assertTrue(vault.requests.isEmpty())
+        assertTrue(h.dao.pendingRows().isEmpty())
+    }
+
+    @Test
+    fun `metadata updates go to the vault while anything does`() {
+        val none = DestinationPrefs()
+        assertEquals(emptySet<OutputTarget>(), none.vaultMetadataTargets())
+        assertEquals(setOf(OutputTarget.VAULT), none.copy(notes = setOf(OutputTarget.VAULT)).vaultMetadataTargets())
+        assertEquals(setOf(OutputTarget.VAULT), none.copy(audio = setOf(OutputTarget.VAULT)).vaultMetadataTargets())
+        assertEquals(emptySet<OutputTarget>(), none.copy(notes = setOf(OutputTarget.FOLDER)).vaultMetadataTargets())
+        assertEquals(
+            setOf(OutputTarget.VAULT),
+            SyncEngine.targetsFor(SyncKind.NOTES, SyncEngine.VAULT_METADATA_REF, none.copy(notes = setOf(OutputTarget.VAULT))),
+        )
+        assertEquals(
+            setOf(OutputTarget.VAULT),
+            SyncEngine.targetsFor(SyncKind.NOTES, SyncEngine.VAULT_METADATA_REF, none.copy(transcripts = setOf(OutputTarget.VAULT))),
+        )
+        assertEquals(emptySet<OutputTarget>(), SyncEngine.targetsFor(SyncKind.NOTES, null, none.copy(transcripts = setOf(OutputTarget.VAULT))))
+    }
+
+    @Test
+    fun `a move with Drive and the vault queues a move for each, and no new upload`() = runBlocking {
+        vault.docIds += d.id
+        val prefs = DestinationPrefs(
+            notes = setOf(OutputTarget.DRIVE, OutputTarget.VAULT), driveAccount = account, vaultUrl = vaultUrl,
+            notesFormat = NotesExportFormat.MARKDOWN,
+        )
+        val h = harness(prefs)
+        h.engine.enqueue(d.id, SyncKind.NOTES, prefs.notes)
+        h.engine.run()
+        val uploads = cloud.calls.count { it.startsWith("upload:") }
+        val vaultFiles = vault.calls().count { it.contains("/files/") }
+
+        h.move()
+        assertEquals(2, h.engine.enqueueMoved(d.id, prefs))
+        h.engine.run()
+
+        assertEquals(listOf("Inkwell/Economics/${d.title}/notes.md"), cloud.files())
+        assertEquals("nothing uploaded to Drive again", uploads, cloud.calls.count { it.startsWith("upload:") })
+        assertEquals("no file sent to the vault again", vaultFiles, vault.calls().count { it.contains("/files/") })
+        assertEquals("Economics", FakeVault.jsonOf(vault.requests.last())["folderPath"]!!.jsonPrimitive.content)
+        assertTrue(h.dao.pendingRows().isEmpty())
     }
 }

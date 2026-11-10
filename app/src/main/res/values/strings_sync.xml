@@ -9,6 +9,7 @@
     <string name="sync_chip_device">This tablet</string>
     <string name="sync_chip_folder">Folder</string>
     <string name="sync_chip_drive">Google Drive</string>
+    <string name="sync_chip_vault">Notes vault</string>
     <string name="sync_chip_device_note">Always on: the original stays on this tablet.</string>
     <string name="sync_notes_format">Notes format</string>
     <string name="sync_format_pdf">PDF</string>
@@ -62,18 +63,32 @@
     <string name="sync_drive_setup_privacy">Inkwell asks only for access to the files it creates (drive.file). It can\'t read anything else in your Drive, and it never stores your Google password.</string>
     <string name="sync_drive_copy">Copy %1$s</string>
 
+    <string name="sync_vault_title">Notes vault</string>
+    <string name="sync_vault_subtitle">Your private page on yourpitbox.com, readable on any computer. The link and password stay on this tablet.</string>
+    <string name="sync_vault_url">Private link</string>
+    <string name="sync_vault_password">Password</string>
+    <string name="sync_vault_password_saved">Saved. Type a new one to replace it.</string>
+    <string name="sync_vault_password_hint">Vault password</string>
+    <string name="sync_vault_password_show">Show password</string>
+    <string name="sync_vault_password_hide">Hide password</string>
+    <string name="sync_vault_forget">Forget password</string>
+    <string name="sync_vault_test">Test connection</string>
+    <string name="sync_vault_open">Open vault in browser</string>
+    <string name="sync_vault_needs_setup">Add the private link and password to start uploading.</string>
+    <string name="sync_vault_browser_error">No browser is available to open the vault.</string>
+
     <string name="sync_section_title">Sync</string>
     <string name="sync_auto_title">Sync automatically</string>
     <string name="sync_auto_on">Notes are copied 30 seconds after you stop writing; transcripts and audio as soon as they\'re ready.</string>
     <string name="sync_auto_off">Copies are made only when you tap Sync now.</string>
     <string name="sync_wifi_title">Upload audio on Wi-Fi only</string>
-    <string name="sync_wifi_subtitle">Recordings wait for an unmetered connection before going to Google Drive.</string>
+    <string name="sync_wifi_subtitle">Recordings wait for an unmetered connection before going to Google Drive or the notes vault.</string>
     <string name="sync_now">Sync now</string>
     <string name="sync_syncing">Syncing…</string>
     <string name="sync_status_up_to_date">Up to date</string>
     <string name="sync_status_never">Not synced yet</string>
     <string name="sync_status_last">Last sync %1$s</string>
-    <string name="sync_status_off">Nothing leaves this tablet. Pick a folder or Google Drive above to copy outputs.</string>
+    <string name="sync_status_off">Nothing leaves this tablet. Pick a folder, Google Drive or the notes vault above to copy outputs.</string>
     <plurals name="sync_status_waiting">
         <item quantity="one">%d item waiting</item>
         <item quantity="other">%d items waiting</item>
@@ -105,5 +120,6 @@
     <string name="sync_cancel">Cancel</string>
     <string name="sync_dismiss">Dismiss</string>
     <string name="sync_no_picker">No file picker is available on this device.</string>
+    <string name="sync_password_store_failed">The password couldn\'t be stored securely on this device.</string>
     <string name="sync_backup_schedule_failed">Automatic backup couldn\'t be scheduled.</string>
 </resources>

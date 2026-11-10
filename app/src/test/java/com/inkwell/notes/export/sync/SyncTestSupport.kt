@@ -12,12 +12,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 
 /** In-memory [SyncQueueDao] with the same semantics as the Room queries. */
 class FakeSyncQueueDao : SyncQueueDao {
@@ -185,6 +194,17 @@ class FakeSource(private val tmp: File) : SyncSource {
 class FakeNetwork(var online: Boolean = true, var unmetered: Boolean = true) : NetworkState {
     override fun isOnline() = online
     override fun isUnmetered() = unmetered
+}
+
+class MemoryCredentials(var pw: String? = "correct horse") : VaultCredentials {
+    var stored: VaultSession? = null
+    val saves = CopyOnWriteArrayList<VaultSession?>()
+    override fun password(): String? = pw
+    override fun session(): VaultSession? = stored
+    override fun saveSession(session: VaultSession?) {
+        stored = session
+        saves += session
+    }
 }
 
 /** [FolderNode] over java.io, behaving like a SAF provider (unique names, optional rename support). */
@@ -377,6 +397,104 @@ class FakeDrive : DriveApi {
     }
 }
 
+/** A vault double that follows docs/VAULT_API.md closely enough to drive the client. */
+class FakeVault(
+    val linkId: String = "Lk7xQ2pLmn0",
+    val password: String = "correct horse",
+) : AutoCloseable {
+    val server = MockWebServer()
+    val requests = CopyOnWriteArrayList<RecordedRequest>()
+    val issuedTokens = CopyOnWriteArrayList<String>()
+    val docIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    /** Note text the vault stores per document (from PUT api/docs/{id}). */
+    val markdowns = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /** Tokens the server accepts. Clear it to simulate an expired/invalidated session. */
+    val validTokens = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    @Volatile var lockedSeconds: Long? = null
+    @Volatile var failNext: MutableList<MockResponse> = CopyOnWriteArrayList()
+    private var counter = 0
+
+    init {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests += request
+                failNext.removeFirstOrNull()?.let { return it }
+                return handle(request)
+            }
+        }
+        server.start()
+    }
+
+    val base: String get() = server.url("/notes/$linkId").toString().trimEnd('/')
+    val endpoint: VaultEndpoint get() = VaultEndpoint.insecureForTests(server.url("/notes/$linkId"))
+
+    fun client(credentials: VaultCredentials, clock: () -> Long = System::currentTimeMillis) = VaultClient(httpClient(), endpoint, credentials, clock)
+
+    /** Requests without the login/listing chatter, as "METHOD /path-after-link". */
+    fun calls(): List<String> = requests.map { "${it.method} ${relative(it)}" }
+
+    fun relative(r: RecordedRequest): String = r.requestUrl!!.encodedPath.removePrefix("/notes/$linkId")
+
+    private fun handle(r: RecordedRequest): MockResponse {
+        val path = r.requestUrl!!.encodedPath
+        val prefix = "/notes/$linkId"
+        if (!path.startsWith("$prefix/") && path != prefix) return MockResponse().setResponseCode(404).setHeader("Content-Type", "text/plain").setBody("Not Found\n")
+        val rest = path.removePrefix(prefix)
+        if (rest == "/api/session" && r.method == "POST") {
+            lockedSeconds?.let {
+                return json(429, """{"error":"locked","retryAfterSeconds":$it}""").setHeader("Retry-After", it.toString())
+            }
+            val body = r.body.clone().readUtf8()
+            val pw = runCatching { Json.parseToJsonElement(body).jsonObject["password"]?.toString()?.trim('"') }.getOrNull()
+            if (pw != password) return json(401, """{"error":"invalid_password"}""")
+            val token = "tok-${++counter}.sig"
+            issuedTokens += token
+            validTokens += token
+            return json(200, """{"token":"$token","expiresAt":${System.currentTimeMillis() + 30L * 24 * 3600 * 1000}}""")
+                .setHeader("Set-Cookie", "nv_session=$token; HttpOnly; Secure")
+        }
+        val auth = r.getHeader("Authorization")
+        val token = auth?.removePrefix("Bearer ").orEmpty()
+        if (auth == null || !validTokens.contains(token)) return json(401, """{"error":"unauthorized"}""")
+        return when {
+            rest == "/api/ping" && r.method == "GET" -> json(200, """{"ok":true,"name":"Your Pit Box · Notes"}""")
+            rest == "/api/docs" && r.method == "GET" -> json(200, """{"docs":[${docIds.joinToString(",") { """{"id":"$it","title":"t","kind":"NOTEBOOK"}""" }}]}""")
+            rest.startsWith("/api/docs/") && r.method == "GET" && rest.removePrefix("/api/docs/").none { it == '/' } ->
+                if (rest.removePrefix("/api/docs/") in docIds) {
+                    val id = rest.removePrefix("/api/docs/")
+                    val md = kotlinx.serialization.json.JsonPrimitive(markdowns[id].orEmpty()).toString()
+                    json(200, """{"id":"$id","title":"t","kind":"NOTEBOOK","markdown":$md}""")
+                }
+                else json(404, """{"error":"not_found"}""")
+            rest.startsWith("/api/docs/") && r.method == "PUT" -> {
+                val parts = rest.removePrefix("/api/docs/").split("/")
+                docIds += parts[0]
+                if (parts.size == 1) {
+                    val md = runCatching { Json.parseToJsonElement(r.body.clone().readUtf8()).jsonObject["markdown"] }.getOrNull()
+                    markdowns[parts[0]] = (md as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty()
+                }
+                if (parts.size == 3 && parts[1] == "files" && r.getHeader("Content-Length") == null) json(411, """{"error":"length_required"}""")
+                else json(200, """{"ok":true}""")
+            }
+            else -> json(404, """{"error":"not_found"}""")
+        }
+    }
+
+    override fun close() {
+        runCatching { server.shutdown() }
+    }
+
+    companion object {
+        fun json(code: Int, body: String): MockResponse =
+            MockResponse().setResponseCode(code).setHeader("Content-Type", "application/json; charset=utf-8").setBody(body)
+
+        fun httpClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build()
+
+        fun jsonOf(r: RecordedRequest): JsonObject = Json.parseToJsonElement(r.body.clone().readUtf8()).jsonObject
+    }
+}
+
 fun doc(
     id: String = "0b6f2c1e-8a4d-4c1b-9f7e-1d2c3b4a5f60",
     title: String = "20261015_Financial Markets",
@@ -408,6 +526,11 @@ class EngineHarness(
     val drive: FakeDrive = FakeDrive(),
     val folderRoot: File? = null,
     val folderRename: Boolean = true,
+    /** The notes vault double; without it (or [endpoint]) the vault link counts as missing. */
+    val vault: FakeVault? = null,
+    val credentials: MemoryCredentials = MemoryCredentials(),
+    /** Overrides the vault endpoint (a real server); by default the [vault] double is used. */
+    val endpoint: VaultEndpoint? = null,
 ) {
     val dao = FakeSyncQueueDao()
     val source = FakeSource(File(tmp, "exports").apply { mkdirs() })
@@ -426,6 +549,7 @@ class EngineHarness(
         source = source,
         prefs = { prefs },
         driveClient = { account -> driveAccounts += account; drive },
+        vaultClient = { endpoint -> VaultClient(FakeVault.httpClient(), endpoint, credentials) },
         folders = FolderAccess { uri -> folderAccess.root(uri) },
         network = network,
         state = state,
@@ -435,5 +559,6 @@ class EngineHarness(
         },
         clock = { now },
         io = Dispatchers.Unconfined,
+        endpointFor = { url -> if (url.isNotBlank()) endpoint ?: vault?.endpoint else null },
     )
 }

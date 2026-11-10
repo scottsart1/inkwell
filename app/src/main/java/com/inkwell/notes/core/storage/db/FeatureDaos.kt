@@ -405,11 +405,11 @@ interface SyncQueueDao {
     @Query("UPDATE sync_queue SET status = 'PENDING', attempts = 0, lastError = NULL WHERE status = 'FAILED'")
     suspend fun retryFailed(): Int
 
-    /** Failed items for one destination get another chance (e.g. Google Drive was connected again). */
+    /** Failed items for one destination get another chance (Google Drive connected again, the vault moved to its new address). */
     @Query("UPDATE sync_queue SET status = 'PENDING', attempts = 0, lastError = NULL WHERE status = 'FAILED' AND target = :target")
     suspend fun retryFailedForTarget(target: String): Int
 
-    /** Removes every row for a destination that no longer exists (the notes vault). */
+    /** Removes every row for a destination that was switched off for good (Google Drive disconnected). */
     @Query("DELETE FROM sync_queue WHERE target = :target")
     suspend fun dropAllForTarget(target: String): Int
 

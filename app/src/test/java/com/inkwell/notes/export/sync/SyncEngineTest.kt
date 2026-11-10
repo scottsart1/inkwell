@@ -7,6 +7,7 @@ import com.inkwell.notes.core.model.RecordingStatus
 import com.inkwell.notes.core.model.TranscriptSegment
 import com.inkwell.notes.core.model.TranscriptStatus
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -21,12 +22,18 @@ import java.nio.file.Files
 class SyncEngineTest {
     private val tmp: File = Files.createTempDirectory("sync-engine").toFile()
     private val cloud = FakeDrive()
+    private val vault = FakeVault()
     private val local = File(tmp, "local").apply { mkdirs() }
     private val d = doc(folderId = "f2")
 
     private val drivePrefs = DestinationPrefs(
         notes = setOf(OutputTarget.DRIVE),
         driveAccount = "me@example.com",
+        notesFormat = NotesExportFormat.PDF_AND_MARKDOWN,
+    )
+    private val vaultPrefs = DestinationPrefs(
+        notes = setOf(OutputTarget.VAULT),
+        vaultUrl = "https://yourpitbox.com/notes/Lk7xQ2pLmn0",
         notesFormat = NotesExportFormat.PDF_AND_MARKDOWN,
     )
     private val folderPrefs = DestinationPrefs(
@@ -37,11 +44,12 @@ class SyncEngineTest {
 
     @After
     fun tearDown() {
+        vault.close()
         tmp.deleteRecursively()
     }
 
-    private fun harness(prefs: DestinationPrefs, rename: Boolean = true) =
-        EngineHarness(tmp, prefs, cloud, folderRoot = local, folderRename = rename).apply {
+    private fun harness(prefs: DestinationPrefs, rename: Boolean = true, creds: MemoryCredentials = MemoryCredentials()) =
+        EngineHarness(tmp, prefs, cloud, folderRoot = local, folderRename = rename, vault = vault, credentials = creds).apply {
             source.docs[d.id] = d
             source.folders["f1"] = "Economics" to null
             source.folders["f2"] = "Term 1" to "f1"
@@ -479,16 +487,299 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `rows of the removed notes vault are ignored`() = runBlocking {
-        val h = harness(drivePrefs)
+    fun `rows for a destination this version doesn't know are dropped quietly`() = runBlocking {
+        val h = harness(drivePrefs.copy(notes = setOf(OutputTarget.DRIVE, OutputTarget.VAULT), vaultUrl = vaultPrefs.vaultUrl))
         h.dao.enqueue(
             com.inkwell.notes.core.storage.db.SyncQueueEntity(
-                documentId = d.id, kind = "NOTES", target = "VAULT", refId = null, enqueuedAt = h.now, attempts = 0, lastError = null, status = "PENDING",
+                documentId = d.id, kind = "NOTES", target = "SOMETHING_NEW", refId = null, enqueuedAt = h.now, attempts = 0, lastError = null, status = "PENDING",
             ),
         )
         h.engine.run()
         assertTrue(cloud.calls.isEmpty())
+        assertTrue(vault.requests.isEmpty())
         assertEquals(SyncItemStatus.DONE, h.dao.all.single().status)
+    }
+
+    // ------------------------------------------------------------------ notes vault
+
+    @Test
+    fun `notes go to the vault as doc, notes pdf and notes md`() = runBlocking {
+        val h = harness(vaultPrefs)
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        val report = h.engine.run()
+
+        assertEquals(
+            listOf("POST /api/session", "PUT /api/docs/${d.id}", "PUT /api/docs/${d.id}/files/notes.pdf", "PUT /api/docs/${d.id}/files/notes.md"),
+            vault.calls(),
+        )
+        val put = FakeVault.jsonOf(vault.requests[1])
+        assertEquals("Economics / Term 1", put["folderPath"]!!.jsonPrimitive.content)
+        assertEquals("# Financial Markets\n\nYield curve notes", put["markdown"]!!.jsonPrimitive.content)
+        assertEquals("application/pdf", vault.requests[2].getHeader("Content-Type"))
+        assertTrue(vault.requests[2].body.readByteArray().contentEquals(FakeSource.pdfBytes(d.id)))
+        assertEquals("# Financial Markets\n\nYield curve notes", vault.requests[3].body.readUtf8())
+
+        assertEquals(1, report.succeeded)
+        assertNull(report.error)
+        assertEquals(SyncItemStatus.DONE, h.dao.all.single().status)
+        assertEquals(h.now, h.source.synced[d.id])
+        assertEquals(h.now, h.state.lastSuccessAt)
+        assertEquals("temporary exports are cleaned up", 0, File(tmp, "exports").list()!!.size)
+        assertTrue("nothing goes to Drive", cloud.calls.isEmpty())
+    }
+
+    @Test
+    fun `PDF only format uploads no markdown file but still sends the text for search`() = runBlocking {
+        val h = harness(vaultPrefs.copy(notesFormat = NotesExportFormat.PDF))
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        h.engine.run()
+        assertEquals(listOf("POST /api/session", "PUT /api/docs/${d.id}", "PUT /api/docs/${d.id}/files/notes.pdf"), vault.calls())
+        assertTrue(FakeVault.jsonOf(vault.requests[1]).containsKey("markdown"))
+    }
+
+    @Test
+    fun `markdown only format exports no PDF for the vault`() = runBlocking {
+        val h = harness(vaultPrefs.copy(notesFormat = NotesExportFormat.MARKDOWN))
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        h.engine.run()
+        assertEquals(0, h.source.pdfExports)
+        assertEquals(listOf("POST /api/session", "PUT /api/docs/${d.id}", "PUT /api/docs/${d.id}/files/notes.md"), vault.calls())
+    }
+
+    @Test
+    fun `transcripts create a metadata-only doc first when notes stay on the tablet`() = runBlocking {
+        val h = harness(DestinationPrefs(transcripts = setOf(OutputTarget.VAULT), vaultUrl = "https://v/notes/x"))
+        h.source.recordings["rec-1"] = recording()
+        h.source.transcripts["rec-1"] = StoredTranscript(listOf(TranscriptSegment(0, 1000, "Hello", null)), "openai:whisper-1")
+        h.engine.enqueue(d.id, SyncKind.TRANSCRIPT, setOf(OutputTarget.VAULT), "rec-1")
+        h.engine.run()
+
+        assertEquals(
+            listOf("POST /api/session", "GET /api/docs", "PUT /api/docs/${d.id}", "PUT /api/docs/${d.id}/transcripts/rec-1"),
+            vault.calls(),
+        )
+        assertFalse("never sends note text that should stay local", FakeVault.jsonOf(vault.requests[2]).containsKey("markdown"))
+        assertEquals("openai:whisper-1", FakeVault.jsonOf(vault.requests[3])["source"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `transcripts never overwrite a doc the vault already has`() = runBlocking {
+        vault.docIds += d.id
+        val h = harness(DestinationPrefs(transcripts = setOf(OutputTarget.VAULT), vaultUrl = "https://v/notes/x"))
+        h.source.recordings["rec-1"] = recording()
+        h.source.transcripts["rec-1"] = StoredTranscript(listOf(TranscriptSegment(0, 1000, "Hello", null)), "on-device")
+        h.engine.enqueue(d.id, SyncKind.TRANSCRIPT, setOf(OutputTarget.VAULT), "rec-1")
+        h.engine.run()
+        assertEquals(listOf("POST /api/session", "GET /api/docs", "PUT /api/docs/${d.id}/transcripts/rec-1"), vault.calls())
+    }
+
+    @Test
+    fun `vault audio waits for an unmetered network when asked`() = runBlocking {
+        vault.docIds += d.id
+        val h = harness(DestinationPrefs(audio = setOf(OutputTarget.VAULT), vaultUrl = "https://v/notes/x", audioOnUnmeteredOnly = true))
+        h.source.recordings["rec-1"] = recording()
+        h.network.unmetered = false
+        h.engine.enqueue(d.id, SyncKind.AUDIO, setOf(OutputTarget.VAULT), "rec-1")
+
+        val first = h.engine.run()
+        assertTrue(vault.requests.isEmpty())
+        assertEquals(1, first.deferred)
+        assertEquals(SyncItemStatus.PENDING, h.dao.all.single().status)
+        assertEquals(SyncNeeds(unmetered = true), syncNeeds(h.dao.pendingRows(), h.prefs))
+
+        h.network.unmetered = true
+        h.engine.run()
+        assertEquals("PUT /api/docs/${d.id}/files/rec_rec-1.m4a", vault.calls().last())
+        assertEquals("audio/mp4", vault.requests.last().getHeader("Content-Type"))
+        assertEquals(SyncItemStatus.DONE, h.dao.all.single().status)
+    }
+
+    @Test
+    fun `vault audio on metered networks goes when the user allows it`() = runBlocking {
+        vault.docIds += d.id
+        val h = harness(DestinationPrefs(audio = setOf(OutputTarget.VAULT), vaultUrl = "https://v/notes/x", audioOnUnmeteredOnly = false))
+        h.source.recordings["rec-1"] = recording()
+        h.network.unmetered = false
+        h.engine.enqueue(d.id, SyncKind.AUDIO, setOf(OutputTarget.VAULT), "rec-1")
+        h.engine.run()
+        assertEquals("PUT /api/docs/${d.id}/files/rec_rec-1.m4a", vault.calls().last())
+    }
+
+    @Test
+    fun `a recording still in progress is left for later by the vault too`() = runBlocking {
+        val h = harness(DestinationPrefs(audio = setOf(OutputTarget.VAULT), vaultUrl = "https://v/notes/x", audioOnUnmeteredOnly = false))
+        h.source.recordings["rec-1"] = recording(status = RecordingStatus.RECORDING)
+        h.engine.enqueue(d.id, SyncKind.AUDIO, setOf(OutputTarget.VAULT), "rec-1")
+        val report = h.engine.run()
+        assertEquals(1, report.deferred)
+        assertEquals(SyncItemStatus.PENDING, h.dao.all.single().status)
+        assertEquals(0, h.source.audioExports)
+        assertTrue(vault.requests.isEmpty())
+    }
+
+    @Test
+    fun `offline the vault waits while the folder copy goes ahead`() = runBlocking {
+        val h = harness(vaultPrefs.copy(notes = setOf(OutputTarget.VAULT, OutputTarget.FOLDER), folderUri = folderPrefs.folderUri))
+        h.network.online = false
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        val report = h.engine.run()
+
+        assertTrue(vault.requests.isEmpty())
+        assertTrue(File(docDir(), "notes.pdf").isFile)
+        assertEquals(1, report.succeeded)
+        assertEquals(1, report.deferred)
+        val vaultRow = h.dao.all.single { it.target == OutputTarget.VAULT.name }
+        assertEquals(SyncItemStatus.PENDING, vaultRow.status)
+        assertEquals("waiting for a network is not a failed attempt", 0, vaultRow.attempts)
+    }
+
+    @Test
+    fun `wrong password keeps vault items waiting and says so once`() = runBlocking {
+        val h = harness(vaultPrefs, creds = MemoryCredentials(pw = "wrong"))
+        val other = doc(id = "11111111-2222-3333-4444-555555555555", title = "Other")
+        h.source.docs[other.id] = other
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        h.engine.enqueue(other.id, SyncKind.NOTES, h.prefs.notes)
+        val report = h.engine.run()
+
+        assertEquals("one login attempt, then vault work stops for this run", listOf("POST /api/session"), vault.calls())
+        assertTrue(h.dao.all.all { it.status == SyncItemStatus.PENDING })
+        assertTrue(report.error!!.contains("password is wrong"))
+        assertFalse(report.retryLater)
+        assertEquals(report.error, h.state.lastError)
+    }
+
+    @Test
+    fun `missing link or password is reported without network traffic`() = runBlocking {
+        val noLink = harness(vaultPrefs.copy(vaultUrl = ""))
+        noLink.engine.enqueue(d.id, SyncKind.NOTES, noLink.prefs.notes)
+        assertTrue(noLink.engine.run().error!!.contains("vault link"))
+        val noPassword = harness(vaultPrefs, creds = MemoryCredentials(pw = null))
+        noPassword.engine.enqueue(d.id, SyncKind.NOTES, noPassword.prefs.notes)
+        assertTrue(noPassword.engine.run().error!!.contains("vault password"))
+        assertTrue(vault.requests.isEmpty())
+        assertEquals(SyncItemStatus.PENDING, noPassword.dao.all.single().status)
+    }
+
+    @Test
+    fun `lockout blocks the vault until it ends`() = runBlocking {
+        vault.lockedSeconds = 300
+        val h = harness(vaultPrefs)
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        val report = h.engine.run()
+        assertEquals(h.now + 300_000, report.vaultLockedUntil)
+        assertTrue(report.retryLater)
+        assertEquals(1, vault.requests.size)
+
+        h.engine.run()
+        assertEquals("no login attempts while locked", 1, vault.requests.size)
+
+        vault.lockedSeconds = null
+        h.now += 301_000
+        h.engine.run()
+        assertEquals(SyncItemStatus.DONE, h.dao.all.single().status)
+    }
+
+    @Test
+    fun `a vault problem never holds up Drive, nor a Drive problem the vault`() = runBlocking {
+        val prefs = drivePrefs.copy(notes = setOf(OutputTarget.DRIVE, OutputTarget.VAULT), vaultUrl = vaultPrefs.vaultUrl)
+        val h = harness(prefs, creds = MemoryCredentials(pw = "wrong"))
+        h.engine.enqueue(d.id, SyncKind.NOTES, prefs.notes)
+        h.engine.run()
+        assertEquals(listOf(drivePath("notes.md"), drivePath("notes.pdf")), cloud.files())
+        assertEquals(SyncItemStatus.DONE, h.dao.all.single { it.target == "DRIVE" }.status)
+        assertEquals(SyncItemStatus.PENDING, h.dao.all.single { it.target == "VAULT" }.status)
+
+        val h2 = harness(prefs)
+        h2.engine.enqueue(d.id, SyncKind.NOTES, prefs.notes)
+        cloud.failNext += DriveException.NeedsSignIn()
+        h2.engine.run()
+        assertEquals(SyncItemStatus.PENDING, h2.dao.all.single { it.target == "DRIVE" }.status)
+        assertEquals(SyncItemStatus.DONE, h2.dao.all.single { it.target == "VAULT" }.status)
+        assertTrue("the vault got the notes", vault.calls().contains("PUT /api/docs/${d.id}/files/notes.pdf"))
+    }
+
+    @Test
+    fun `vault server errors retry with a limit and bad requests fail at once`() = runBlocking {
+        val h = harness(vaultPrefs.copy(notesFormat = NotesExportFormat.MARKDOWN))
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        repeat(SyncEngine.MAX_ATTEMPTS - 1) { i ->
+            if (i > 0) h.now += SyncEngine.retryDelayMs(i)
+            vault.failNext += FakeVault.json(503, """{"error":"overloaded"}""")
+            val report = h.engine.run()
+            assertTrue(report.retryLater)
+            val row = h.dao.all.single()
+            assertEquals(SyncItemStatus.PENDING, row.status)
+            assertEquals(i + 1, row.attempts)
+            assertTrue(row.lastError!!.contains("HTTP 503"))
+        }
+        h.now += SyncEngine.retryDelayMs(SyncEngine.MAX_ATTEMPTS - 1)
+        vault.failNext += FakeVault.json(503, """{"error":"overloaded"}""")
+        h.engine.run()
+        assertEquals(SyncItemStatus.FAILED, h.dao.all.single().status)
+
+        val h2 = harness(vaultPrefs)
+        h2.engine.enqueue(d.id, SyncKind.NOTES, h2.prefs.notes)
+        vault.failNext += FakeVault.json(400, """{"error":"invalid_request","detail":"title is required"}""")
+        val report = h2.engine.run()
+        assertFalse(report.retryLater)
+        assertEquals(1, report.failed)
+        assertEquals(SyncItemStatus.FAILED, h2.dao.all.single().status)
+    }
+
+    @Test
+    fun `vault runs kicked during an item's retry backoff neither send it nor use up its attempts`() = runBlocking {
+        val h = harness(vaultPrefs.copy(notesFormat = NotesExportFormat.MARKDOWN))
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        vault.failNext += FakeVault.json(503, """{"error":"overloaded"}""")
+        h.engine.run()
+        assertEquals(1, h.dao.all.single().attempts)
+        val sent = vault.requests.size
+
+        repeat(20) {
+            h.now += 1_000
+            val report = h.engine.run()
+            assertTrue("the run comes back for the waiting item", report.retryLater)
+            assertEquals(1, report.deferred)
+            assertTrue("the outage stays shown while the item waits", h.state.lastError!!.contains("HTTP 503"))
+        }
+        assertEquals(1, h.dao.all.single().attempts)
+        assertEquals("nothing is sent while the item waits", sent, vault.requests.size)
+
+        h.now += SyncEngine.retryDelayMs(1)
+        val report = h.engine.run()
+        assertNull(report.error, report.error)
+        assertNull("the copy went through: the error is cleared", h.state.lastError)
+        assertEquals(SyncItemStatus.DONE, h.dao.all.single().status)
+    }
+
+    @Test
+    fun `vault items for a switched-off vault and missing documents are dropped quietly`() = runBlocking {
+        val h = harness(vaultPrefs)
+        h.engine.enqueue(d.id, SyncKind.NOTES, setOf(OutputTarget.VAULT))
+        h.engine.enqueue("gone", SyncKind.NOTES, setOf(OutputTarget.VAULT))
+        h.prefs = h.prefs.copy(notes = emptySet())
+        h.engine.run()
+        assertTrue(vault.requests.isEmpty())
+        assertTrue(h.dao.all.all { it.status == SyncItemStatus.DONE })
+
+        val h2 = harness(vaultPrefs)
+        h2.source.docs[d.id] = d.copy(trashedAt = 5)
+        h2.engine.enqueue(d.id, SyncKind.NOTES, h2.prefs.notes)
+        h2.engine.enqueue("gone", SyncKind.NOTES, h2.prefs.notes)
+        h2.engine.run()
+        assertTrue(vault.requests.isEmpty())
+        assertTrue(h2.dao.all.all { it.status == SyncItemStatus.DONE })
+        assertTrue(h2.source.synced.isEmpty())
+    }
+
+    @Test
+    fun `vault copy errors name the vault`() = runBlocking {
+        val h = harness(vaultPrefs)
+        h.source.failExport = IOException("render failed")
+        h.engine.enqueue(d.id, SyncKind.NOTES, h.prefs.notes)
+        val report = h.engine.run()
+        assertTrue(report.error!!, report.error!!.contains("to the notes vault"))
     }
 
     // ------------------------------------------------------------------ folder
@@ -644,20 +935,27 @@ class SyncEngineTest {
     fun `everything means notes, finished recordings and done transcripts`() = runBlocking {
         val prefs = DestinationPrefs(
             notes = setOf(OutputTarget.FOLDER),
-            transcripts = setOf(OutputTarget.DRIVE),
-            audio = setOf(OutputTarget.FOLDER, OutputTarget.DRIVE),
-            folderUri = "x", driveAccount = "me@example.com",
+            transcripts = setOf(OutputTarget.DRIVE, OutputTarget.VAULT),
+            audio = setOf(OutputTarget.FOLDER, OutputTarget.DRIVE, OutputTarget.VAULT),
+            folderUri = "x", driveAccount = "me@example.com", vaultUrl = "https://v/notes/x",
         )
         val h = harness(prefs)
         h.source.recordings["r1"] = recording(id = "r1")
         h.source.recordings["r2"] = recording(id = "r2", status = RecordingStatus.RECORDING, transcriptStatus = TranscriptStatus.NONE)
         h.engine.enqueueEverything()
         val rows = h.dao.pendingRows().map { "${it.kind}:${it.target}:${it.refId}" }.toSet()
-        assertEquals(setOf("NOTES:FOLDER:null", "TRANSCRIPT:DRIVE:r1", "AUDIO:FOLDER:r1", "AUDIO:DRIVE:r1"), rows)
+        assertEquals(
+            setOf("NOTES:FOLDER:null", "TRANSCRIPT:DRIVE:r1", "TRANSCRIPT:VAULT:r1", "AUDIO:FOLDER:r1", "AUDIO:DRIVE:r1", "AUDIO:VAULT:r1"),
+            rows,
+        )
 
         h.dao.rows.value = emptyList()
         h.engine.enqueueEverything(onlyKind = SyncKind.AUDIO, onlyTarget = OutputTarget.DRIVE)
         assertEquals(listOf("AUDIO:DRIVE:r1"), h.dao.pendingRows().map { "${it.kind}:${it.target}:${it.refId}" })
+
+        h.dao.rows.value = emptyList()
+        h.engine.enqueueEverything(onlyKind = SyncKind.AUDIO, onlyTarget = OutputTarget.VAULT)
+        assertEquals(listOf("AUDIO:VAULT:r1"), h.dao.pendingRows().map { "${it.kind}:${it.target}:${it.refId}" })
     }
 
     @Test
@@ -677,7 +975,7 @@ class SyncEngineTest {
         assertTrue(cloud.calls.isEmpty())
         assertEquals("a folder-only run can't clear a Drive problem", "Google Drive needs you to sign in again.", h.state.lastError)
 
-        h.engine.run(SyncScope.DRIVE_AUDIO)
+        h.engine.run(SyncScope.NETWORK_AUDIO)
         assertEquals(listOf(drivePath("audio_Lecture 3.m4a")), cloud.files())
         assertEquals(1, h.dao.pendingRows().size)
         assertEquals("DRIVE", h.dao.pendingRows().single().target)
@@ -685,6 +983,42 @@ class SyncEngineTest {
         h.engine.run(SyncScope.ALL)
         assertTrue(h.dao.pendingRows().isEmpty())
         assertNull(h.state.lastError)
+    }
+
+    @Test
+    fun `the network audio run takes vault audio too and keeps the vault's error from a folder run`() = runBlocking {
+        vault.docIds += d.id
+        val prefs = vaultPrefs.copy(
+            notes = setOf(OutputTarget.FOLDER, OutputTarget.VAULT), audio = setOf(OutputTarget.VAULT),
+            folderUri = folderPrefs.folderUri, audioOnUnmeteredOnly = true,
+        )
+        val h = harness(prefs)
+        h.source.recordings["rec-1"] = recording()
+        h.engine.enqueue(d.id, SyncKind.NOTES, prefs.notes)
+        h.engine.enqueue(d.id, SyncKind.AUDIO, prefs.audio, "rec-1")
+        h.state.lastError = "The vault password is wrong."
+
+        h.engine.run(SyncScope.FOLDER)
+        assertTrue(File(docDir(), "notes.pdf").isFile)
+        assertTrue(vault.requests.isEmpty())
+        assertEquals("a folder-only run can't clear a vault problem", "The vault password is wrong.", h.state.lastError)
+
+        h.engine.run(SyncScope.NETWORK_AUDIO)
+        assertEquals(listOf("POST /api/session", "GET /api/docs", "PUT /api/docs/${d.id}/files/rec_rec-1.m4a"), vault.calls())
+        assertEquals(1, h.dao.pendingRows().size)
+        assertEquals("VAULT", h.dao.pendingRows().single().target)
+
+        h.engine.run(SyncScope.ALL)
+        assertTrue(h.dao.pendingRows().isEmpty())
+        assertNull(h.state.lastError)
+    }
+
+    @Test
+    fun `scheduled runs of earlier versions keep their scope`() {
+        assertEquals(SyncScope.NETWORK_AUDIO, SyncScope.fromName("VAULT_AUDIO"))
+        assertEquals(SyncScope.NETWORK_AUDIO, SyncScope.fromName("DRIVE_AUDIO"))
+        SyncScope.entries.forEach { assertEquals(it, SyncScope.fromName(it.name)) }
+        assertNull(SyncScope.fromName("SOMETHING_NEW"))
     }
 
     @Test
@@ -697,6 +1031,9 @@ class SyncEngineTest {
         assertEquals(SyncNeeds(network = true), syncNeeds(listOf(row(SyncKind.NOTES, OutputTarget.DRIVE)), wifiOnly))
         assertEquals(SyncNeeds(unmetered = true), syncNeeds(listOf(row(SyncKind.AUDIO, OutputTarget.DRIVE)), wifiOnly))
         assertEquals(SyncNeeds(network = true), syncNeeds(listOf(row(SyncKind.AUDIO, OutputTarget.DRIVE)), wifiOnly.copy(audioOnUnmeteredOnly = false)))
+        assertEquals(SyncNeeds(network = true), syncNeeds(listOf(row(SyncKind.NOTES, OutputTarget.VAULT)), wifiOnly))
+        assertEquals(SyncNeeds(unmetered = true), syncNeeds(listOf(row(SyncKind.AUDIO, OutputTarget.VAULT)), wifiOnly))
+        assertEquals(SyncNeeds(network = true), syncNeeds(listOf(row(SyncKind.AUDIO, OutputTarget.VAULT)), wifiOnly.copy(audioOnUnmeteredOnly = false)))
         assertFalse(syncNeeds(emptyList(), wifiOnly).any)
     }
 }

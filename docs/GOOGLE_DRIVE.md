@@ -4,6 +4,10 @@ Inkwell can copy your notes, meeting transcripts and recordings into your Google
 computer, including a work laptop, open <https://drive.google.com> in a browser and look in
 **My Drive › Inkwell**. Nothing needs to be installed on the laptop.
 
+Google Drive is one of three destinations. The others are a folder on the tablet and the
+**Notes vault**, your private page on yourpitbox.com (private link and password, no Google
+account needed). The vault's protocol is described in [VAULT_API.md](VAULT_API.md).
+
 ```
 My Drive / Inkwell / <folder> / <document title> / notes.pdf             handwriting, typed text, PDF pages (searchable)
                                                     notes.md              recognised text, for copy and paste

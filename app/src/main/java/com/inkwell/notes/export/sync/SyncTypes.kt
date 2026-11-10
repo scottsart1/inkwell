@@ -17,13 +17,26 @@ enum class SyncScope {
     ALL,
     /** Folder copies only: needs no network. */
     FOLDER,
-    /** Audio for Google Drive only: waits for an unmetered network. */
-    DRIVE_AUDIO;
+    /** Audio for the network destinations (Google Drive, the notes vault) only: waits for an unmetered network. */
+    NETWORK_AUDIO;
 
     fun accepts(item: com.inkwell.notes.core.storage.db.SyncQueueEntity): Boolean = when (this) {
         ALL -> true
         FOLDER -> item.target == OutputTarget.FOLDER.name
-        DRIVE_AUDIO -> item.target == OutputTarget.DRIVE.name && item.kind == SyncKind.AUDIO.name
+        NETWORK_AUDIO -> item.target in NETWORK_TARGETS && item.kind == SyncKind.AUDIO.name
+    }
+
+    companion object {
+        private val NETWORK_TARGETS = setOf(OutputTarget.DRIVE.name, OutputTarget.VAULT.name)
+
+        /**
+         * The scope stored under [name] in a scheduled run. Names of earlier versions ("VAULT_AUDIO",
+         * "DRIVE_AUDIO") were the same audio run; anything unknown is null.
+         */
+        fun fromName(name: String): SyncScope? = when (name) {
+            "VAULT_AUDIO", "DRIVE_AUDIO" -> NETWORK_AUDIO
+            else -> entries.firstOrNull { it.name == name }
+        }
     }
 }
 
@@ -57,6 +70,14 @@ fun DestinationPrefs.uses(target: OutputTarget): Boolean = target in notes || ta
  */
 fun DestinationPrefs.driveMoveTargets(): Set<OutputTarget> =
     if (uses(OutputTarget.DRIVE)) setOf(OutputTarget.DRIVE) else emptySet()
+
+/**
+ * The vault when anything goes there: the vault's document row then follows the library's title
+ * and folder path (see [SyncEngine.enqueueMoved]). The upsert replaces the stored note text too,
+ * so without Notes -> Vault the update sends back the text the vault already has.
+ */
+fun DestinationPrefs.vaultMetadataTargets(): Set<OutputTarget> =
+    if (uses(OutputTarget.VAULT)) setOf(OutputTarget.VAULT) else emptySet()
 
 /** Removes the folder destination everywhere (used when its permission was revoked). */
 fun DestinationPrefs.withoutFolder(): DestinationPrefs = copy(
@@ -108,6 +129,16 @@ interface SyncStateStore {
     var driveRootId: String?
     /** The Drive folder id last shared with anyone who has the link (null = not shared). */
     var driveSharedRootId: String?
+    /** The vault is locked until this time (epoch ms; 0 = not locked). */
+    var vaultLockedUntil: Long
+    /**
+     * When the vault last refused the stored password (epoch ms; 0 = never). Vault uploads pause
+     * for [SyncEngine.CREDENTIALS_HOLD_MS] after that, or until the credentials change, so the
+     * app's own retries never trip the vault's failed-login lockout against the user.
+     */
+    var vaultCredentialsRefusedAt: Long
+        get() = 0L
+        set(@Suppress("UNUSED_PARAMETER") value) {}
     /**
      * Where the document's files were last written inside the folder destination [folder] (its
      * tree URI). Kept after the document is deleted (its copies stay), so no other document writes
@@ -135,6 +166,8 @@ class InMemorySyncState : SyncStateStore {
     override var lastError: String? = null
     override var driveRootId: String? = null
     override var driveSharedRootId: String? = null
+    override var vaultLockedUntil: Long = 0
+    override var vaultCredentialsRefusedAt: Long = 0
     private val driveFolders = HashMap<String, String>()
     /** Folder -> document id -> location. */
     private val locations = HashMap<String, HashMap<String, List<String>>>()
