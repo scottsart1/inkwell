@@ -40,12 +40,12 @@ class SettingsRepository(context: Context, scope: CoroutineScope) {
      */
     private val state = MutableStateFlow(runBlocking { runCatching { store.data.first() }.getOrDefault(AppSettings()) })
 
+    /** Current settings. */
+    val settings: StateFlow<AppSettings> = state.asStateFlow()
+
     init {
         scope.launch { store.data.collect { state.value = it } }
     }
-
-    /** Current settings. */
-    val settings: StateFlow<AppSettings> = state.asStateFlow()
 
     val current: AppSettings get() = settings.value
 
