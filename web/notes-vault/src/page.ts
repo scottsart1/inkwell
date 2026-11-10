@@ -249,8 +249,12 @@ const CLIENT_JS = String.raw`
       body: JSON.stringify({ password: password })
     }).then(function (res) {
       if (res.ok) { pw.value = ''; showApp(); if (!narrow()) search.focus(); return; }
+      var fromVault = /application\/json/.test(res.headers.get('Content-Type') || '');
       return res.json().catch(function () { return {}; }).then(function (data) {
-        var msg = 'Something went wrong. Try again.';
+        // Say what came back, so a refusal by the vault and one by the network can be told apart.
+        var msg = fromVault
+          ? 'Something went wrong (' + res.status + (data && data.error ? ' ' + data.error : '') + '). Try again.'
+          : 'Your network did not let the sign-in through (HTTP ' + res.status + ').';
         if (res.status === 401) msg = 'That password is not right.';
         if (res.status === 429) {
           var min = Math.max(1, Math.ceil((data.retryAfterSeconds || 60) / 60));
