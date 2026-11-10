@@ -1,7 +1,7 @@
 # Notes vault API (yourpitbox.com/notes)
 
-The private notes vault is a Cloudflare Worker mounted on `yourpitbox.com/notes/*` (its source
-is kept and deployed outside this repository). The Android app's `SyncManager` pushes notes,
+The private notes vault is a Cloudflare Worker ([`web/notes-vault`](../web/notes-vault/README.md),
+deployed with `npm run deploy` there) mounted on `yourpitbox.com/notes/*`. The Android app's `SyncManager` pushes notes,
 transcripts and audio to it when the user picks "Notes vault" as a destination in Settings ›
 Storage, sync & backup, next to a folder and Google Drive. The settings take the private link
 (`https://yourpitbox.com/notes/<LINK_ID>`) and the password; the password and the session token

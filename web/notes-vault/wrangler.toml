@@ -1,0 +1,30 @@
+# Private notes vault for yourpitbox.com/notes (see README.md).
+# Secrets (never in this file): NOTES_LINK_ID, NOTES_PASSWORD, SESSION_SECRET.
+name = "notes-vault"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+# Only reachable through yourpitbox.com/notes/<link>; no workers.dev or preview URLs.
+workers_dev = false
+preview_urls = false
+# The page embeds the Markdown renderer's source (Function#toString); keep bundled
+# functions free of name-preserving helper calls.
+keep_names = false
+
+routes = [
+  { pattern = "yourpitbox.com/notes*", zone_name = "yourpitbox.com" },
+  { pattern = "www.yourpitbox.com/notes*", zone_name = "yourpitbox.com" },
+]
+
+# Request URLs contain the private link id, so Workers Logs / invocation logs stay off.
+[observability]
+enabled = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "notes-vault"
+database_id = "a769f70f-3ed7-4120-9ba0-620b1392285d"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "notes-vault-files"

@@ -31,11 +31,11 @@ import java.util.UUID
 
 /**
  * Drives the real [VaultClient] (OkHttp request shapes) against the real Worker running
- * locally under `wrangler dev` (the Worker's source is kept outside this repository; its
- * contract is docs/VAULT_API.md). Skipped unless the environment names it:
+ * locally under `wrangler dev` (source in web/notes-vault; its contract is docs/VAULT_API.md).
+ * Skipped unless the environment names it:
  *
  * ```
- * cd <worker checkout> && printf 'NOTES_LINK_ID=devlink\nNOTES_PASSWORD=pw\nSESSION_SECRET=s\n' > .dev.vars
+ * cd web/notes-vault && npm ci && printf 'NOTES_LINK_ID=devlink\nNOTES_PASSWORD=pw\nSESSION_SECRET=s\n' > .dev.vars
  * npx wrangler d1 migrations apply notes-vault --local && npx wrangler dev --local --port 8787
  * INKWELL_VAULT_DEV_URL=http://127.0.0.1:8787/notes/devlink INKWELL_VAULT_DEV_PASSWORD=pw \
  *   ./gradlew :app:testDebugUnitTest --tests '*VaultDevServerTest*'
