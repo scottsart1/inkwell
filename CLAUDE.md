@@ -35,9 +35,10 @@ so it is unit-testable without Android.
 | `speakers` | Who spoke when (on-device sherpa-onnx or OpenAI diarize), people, voiceprints, naming | `SpeakerContracts.kt` |
 | `ocr` + `search` | ML Kit OCR + handwriting recognition, FTS index, indexing pipeline, search screen | `ocr/OcrContracts.kt`, `search/SearchScreen.kt` |
 | `pdf` | Import, render, text extraction, merge/split/extract, scanning | `PdfService.kt` |
-| `export` | Export formats, thumbnails, backup, sync to a folder / Google Drive, storage settings UI | `ExportContracts.kt`, `ui/ExportUi.kt` |
+| `export` | Export formats, thumbnails, backup, sync to a folder / Google Drive / notes vault, Email to work, storage settings UI | `ExportContracts.kt`, `ui/ExportUi.kt` |
 | `whiteboard`, `typed` | Infinite canvas screen, typed document editor | `WhiteboardScreen.kt`, `TypedDocumentScreen.kt` |
 | `settings` | Settings screens, app lock | `SettingsScreen.kt`, `AppLock.kt` |
+| `web/notes-vault` | Cloudflare Worker for yourpitbox.com/notes (the notes vault) | `docs/VAULT_API.md` |
 | `ui/theme` | Design tokens (`Inkwell.colors`, `Dimens`, Figtree type) | `Theme.kt` |
 
 Rules for contracts:

@@ -87,7 +87,7 @@ internal object GraphLibraryHooks : LibraryHooks {
 
     override fun documentMoved(docId: String) = dispatch("move") {
         it.indexing.documentMetaChanged(docId)
-        // Only where the copies live changed: no new notes export for Google Drive.
+        // Only where the copies live changed: no new notes export for Google Drive or the vault.
         it.sync.onDocumentMoved(docId)
     }
 

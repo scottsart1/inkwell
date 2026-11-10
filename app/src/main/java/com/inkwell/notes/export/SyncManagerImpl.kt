@@ -21,12 +21,19 @@ import com.inkwell.notes.export.sync.GraphSyncSource
 import com.inkwell.notes.export.sync.PlayServicesDriveAuth
 import com.inkwell.notes.export.sync.PrefsSyncStateStore
 import com.inkwell.notes.export.sync.SafFolderAccess
+import com.inkwell.notes.export.sync.SecretVaultCredentials
 import com.inkwell.notes.export.sync.SyncCheckFailure
 import com.inkwell.notes.export.sync.SyncEngine
 import com.inkwell.notes.export.sync.SyncKind
 import com.inkwell.notes.export.sync.SyncRunReport
 import com.inkwell.notes.export.sync.SyncScheduler
 import com.inkwell.notes.export.sync.SyncScope
+import com.inkwell.notes.export.sync.VaultClient
+import com.inkwell.notes.export.sync.VaultConnectionTest
+import com.inkwell.notes.export.sync.VaultEndpoint
+import com.inkwell.notes.export.sync.VaultException
+import com.inkwell.notes.export.sync.VaultPassword
+import com.inkwell.notes.export.sync.VaultUrl
 import com.inkwell.notes.export.sync.hasAnyTarget
 import com.inkwell.notes.export.sync.includesMarkdown
 import com.inkwell.notes.export.sync.includesPdf
@@ -50,11 +57,13 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Copies notes, transcripts and audio to the destinations chosen in Settings (a SAF folder and/or
- * the user's Google Drive). This device always keeps the original; nothing here deletes local
- * data, and deleting a document never deletes its copies (sync is not backup).
+ * Copies notes, transcripts and audio to the destinations chosen in Settings (a SAF folder, the
+ * user's Google Drive and/or the yourpitbox.com notes vault). This device always keeps the
+ * original; nothing here deletes local data, and deleting a document never deletes its copies
+ * (sync is not backup).
  *
  * Work is queued in `sync_queue` and processed by [SyncEngine], in the background through
  * WorkManager ([com.inkwell.notes.export.sync.SyncWorker]) or right away by [syncNow].
@@ -66,6 +75,8 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
     private val stateStore by lazy { PrefsSyncStateStore(graph.context) }
     private val scheduler by lazy { SyncScheduler(graph.context) }
     private val debouncer = Debouncer(graph.appScope, EDIT_SETTLE_MS)
+    /** Saved vault links the vault itself moved (normalised old -> new): see [vaultMoved]. */
+    private val vaultMoves = ConcurrentHashMap<String, String>()
 
     internal val engine: SyncEngine by lazy {
         SyncEngine(
@@ -73,6 +84,12 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
             source = GraphSyncSource(graph),
             prefs = { graph.settings.current.destinations },
             driveClient = { account -> driveClient(PlayServicesDriveAuth(graph.context) { account }) },
+            vaultClient = { endpoint ->
+                val credentials = SecretVaultCredentials(graph.secrets, endpoint, savedLink = { graph.settings.current.destinations.vaultUrl })
+                VaultClient(graph.http, endpoint, credentials, onMoved = { from, to ->
+                    graph.appScope.launch(Dispatchers.IO) { safely { vaultMoved(from, to) } }
+                })
+            },
             folders = SafFolderAccess(graph.context),
             network = AndroidNetworkState(graph.context),
             state = stateStore,
@@ -86,7 +103,6 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
 
     private suspend fun start() {
         try {
-            forgetLegacyVault()
             refreshStatus()
             graph.appScope.launch { engine.running.collect { r -> _status.update { it.copy(running = r) } } }
             graph.appScope.launch(Dispatchers.IO) {
@@ -157,7 +173,7 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
         debouncer.cancel(docId)
         debouncer.cancel(movedKey(docId))
         graph.appScope.launch(Dispatchers.IO) {
-            // Copies in the folder and in Drive stay: deleting locally never deletes them. The
+            // Copies in the folder, in Drive and in the vault stay: deleting locally never deletes them. The
             // folder location is kept too, so a later document with the same title gets its own
             // directory instead of writing over these last copies.
             safely { graph.db.syncQueue().dropOpenForDocument(docId) }
@@ -211,6 +227,41 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
         Result.failure(SyncCheckFailure(e.message ?: "Google Drive didn't answer.", e))
     }
 
+    override suspend fun testVault(url: String, password: String): Result<String> = withContext(Dispatchers.IO) {
+        val endpoint = when (val parsed = VaultUrl.parse(url)) {
+            is VaultUrl.Parsed.Valid -> parsed.endpoint
+            VaultUrl.Parsed.Empty -> return@withContext Result.failure(SyncCheckFailure("Enter the vault link first."))
+            is VaultUrl.Parsed.Invalid -> return@withContext Result.failure(SyncCheckFailure(parsed.reason))
+        }
+        val savedLink = graph.settings.current.destinations.vaultUrl
+        // The saved password only ever goes to the vault it was entered for.
+        val stored = runCatching { VaultPassword.storedFor(graph.secrets, endpoint, savedLink) }.getOrNull()
+        val password = password.ifEmpty { stored.orEmpty() }
+        val isSavedLink = VaultUrl.endpointOrNull(savedLink) == endpoint
+        val isSavedVault = isSavedLink && password == stored
+        VaultConnectionTest.run(graph.http, endpoint, password).fold(
+            onSuccess = { ok ->
+                val moved = ok.movedTo
+                if (moved != null && isSavedLink) safely { vaultMoved(endpoint, moved) }
+                if (isSavedVault) {
+                    // The saved settings work: reuse this session and release anything that waited.
+                    safely { SecretVaultCredentials(graph.secrets, moved ?: endpoint).saveSession(ok.session) }
+                    stateStore.vaultLockedUntil = 0
+                    stateStore.vaultCredentialsRefusedAt = 0
+                    if (stateStore.lastError != null) stateStore.lastError = null
+                    refreshStatus()
+                    kick()
+                }
+                Result.success(ok.message)
+            },
+            onFailure = { e ->
+                val locked = e.cause as? VaultException.Locked
+                if (locked != null && isSavedVault) stateStore.vaultLockedUntil = System.currentTimeMillis() + locked.retryAfterSeconds * 1000
+                Result.failure(e)
+            },
+        )
+    }
+
     override suspend fun testFolder(treeUri: Uri): Result<String> = withContext(Dispatchers.IO) {
         try {
             val doc = DocumentFile.fromTreeUri(graph.context, treeUri)
@@ -233,6 +284,36 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
 
     /** Items that gave up after repeated failures ("Sync now" retries them). */
     fun observeFailedCount(): Flow<Int> = runCatching { graph.db.syncQueue().observeFailedCount() }.getOrDefault(emptyFlow())
+
+    /** The vault password or link changed: drop the cached session and retry what waited. */
+    fun onVaultCredentialsChanged() {
+        graph.appScope.launch(Dispatchers.IO) {
+            safely { graph.secrets.put(SecretStore.VAULT_SESSION, null) }
+            stateStore.vaultLockedUntil = 0
+            stateStore.vaultCredentialsRefusedAt = 0
+            stateStore.lastError = null
+            refreshStatus()
+            if (graph.settings.current.destinations.autoSync) kick()
+        }
+    }
+
+    /**
+     * The vault answered from [to] instead of [from]: the site in front of it moved between
+     * `www.host` and `host` (VaultRedirect). If [from] is still the saved link, saves [to]. It is
+     * the same vault, so nothing is copied again; what failed on the old address is retried.
+     */
+    private suspend fun vaultMoved(from: VaultEndpoint, to: VaultEndpoint) {
+        if (VaultUrl.endpointOrNull(graph.settings.current.destinations.vaultUrl) != from) return
+        vaultMoves[from.baseUrl] = to.baseUrl
+        safely { VaultPassword.moved(graph.secrets, from, to) }
+        graph.settings.update { s ->
+            if (VaultUrl.endpointOrNull(s.destinations.vaultUrl) != from) s
+            else s.copy(destinations = s.destinations.copy(vaultUrl = to.baseUrl))
+        }
+        Log.i(TAG, "The vault answered from another host of its site; the saved link now uses it")
+        val retried = graph.db.syncQueue().retryFailedForTarget(OutputTarget.VAULT.name)
+        if (retried > 0 && graph.settings.current.destinations.autoSync) kick()
+    }
 
     /**
      * Google granted Drive access ([token], from the settings screen): finds out which account it
@@ -333,13 +414,6 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
             ?.let { "https://drive.google.com/drive/folders/$it" }
             ?: "https://drive.google.com/drive/my-drive"
 
-    /** Removes what the notes vault (removed) left behind: queued uploads, password, session, state. */
-    private suspend fun forgetLegacyVault() {
-        safely { graph.db.syncQueue().dropAllForTarget(LEGACY_VAULT_TARGET) }
-        safely { SecretStore.LEGACY_VAULT_SECRETS.forEach { if (graph.secrets.has(it)) graph.secrets.remove(it) } }
-        safely { stateStore.forgetLegacyVault() }
-    }
-
     /** One background pass (called by the worker). */
     internal suspend fun runQueue(scope: SyncScope): SyncRunReport {
         val report = engine.run(scope)
@@ -360,7 +434,14 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
 
     private fun afterRun(report: SyncRunReport) {
         refreshStatus()
-        if (report.slowDown) scheduler.scheduleAfter(SLOW_DOWN_MS)
+        // One delayed run: when the vault's lockout ends or Drive's slow-down is over, whichever
+        // comes first (that run schedules the next one if something still has to wait).
+        val now = System.currentTimeMillis()
+        val waits = listOfNotNull(
+            (report.vaultLockedUntil - now + 1_000).takeIf { report.vaultLockedUntil > now },
+            SLOW_DOWN_MS.takeIf { report.slowDown },
+        )
+        waits.minOrNull()?.let { scheduler.scheduleAfter(it) }
     }
 
     private fun refreshStatus() {
@@ -408,13 +489,22 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
             // Another Google account: its Drive has none of the copies yet.
             enqueued += engine.enqueueEverything(new, onlyTarget = OutputTarget.DRIVE)
         }
+        val oldVault = VaultUrl.normalize(old.vaultUrl)
+        val newVault = VaultUrl.normalize(new.vaultUrl)
+        // The vault moving between www.host and host is still the same vault: nothing to copy again.
+        val moved = oldVault != null && newVault != null && vaultMoves.remove(oldVault) == newVault
+        if (newVault != oldVault && !moved) {
+            stateStore.vaultLockedUntil = 0
+            stateStore.vaultCredentialsRefusedAt = 0
+            if (newVault != null) enqueued += engine.enqueueEverything(new, onlyTarget = OutputTarget.VAULT)
+        }
         val newFormats = (new.notesFormat.includesPdf && !old.notesFormat.includesPdf) ||
             (new.notesFormat.includesMarkdown && !old.notesFormat.includesMarkdown)
         if (newFormats) enqueued += engine.enqueueEverything(new, onlyKind = SyncKind.NOTES)
         if (new.autoSync && !old.autoSync) enqueued += engine.enqueueChangedDocuments(new)
         if (!new.autoSync && old.autoSync) scheduler.cancelAll()
         val conditionsChanged = enqueued > 0 || new.autoSync != old.autoSync ||
-            new.audioOnUnmeteredOnly != old.audioOnUnmeteredOnly || accountChanged || new.folderUri != old.folderUri
+            new.audioOnUnmeteredOnly != old.audioOnUnmeteredOnly || accountChanged || newVault != oldVault || new.folderUri != old.folderUri
         if (new.autoSync && conditionsChanged) kick()
     }
 
@@ -438,7 +528,5 @@ class SyncManagerImpl(private val graph: AppGraph) : SyncManager {
         const val STARTUP_DELAY_MS = 15_000L
         /** Wait after Google Drive asked Inkwell to slow down. */
         const val SLOW_DOWN_MS = 5L * 60 * 1000
-        /** `sync_queue.target` of the removed notes vault. */
-        const val LEGACY_VAULT_TARGET = "VAULT"
     }
 }

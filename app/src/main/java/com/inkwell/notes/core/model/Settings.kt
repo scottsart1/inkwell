@@ -141,12 +141,17 @@ enum class OutputTarget {
     FOLDER,
     /** The user's Google Drive, in an "Inkwell" folder Inkwell creates (drive.file access only). */
     DRIVE,
+    /**
+     * The private notes vault on yourpitbox.com (docs/VAULT_API.md): a page readable on any
+     * computer, behind its private link and password ([DestinationPrefs.vaultUrl], SecretStore).
+     */
+    VAULT,
 }
 
 /**
- * Reads a set of [OutputTarget] names and skips any it doesn't know, so settings written by an
- * older version (which had a "VAULT" target) or a newer one never fail to load. A settings file
- * that fails to load is replaced with defaults, which would silently reset every preference.
+ * Reads a set of [OutputTarget] names and skips any it doesn't know, so settings written by
+ * another version (one with a target this one lacks) never fail to load. A settings file that
+ * fails to load is replaced with defaults, which would silently reset every preference.
  */
 object OutputTargetSetSerializer : KSerializer<Set<OutputTarget>> {
     private val names = ListSerializer(String.serializer())
@@ -188,6 +193,11 @@ data class DestinationPrefs(
      * by default; turning it off withdraws the link.
      */
     val driveShareLink: Boolean = false,
+    /**
+     * Private link of the notes vault, `https://yourpitbox.com/notes/<link-id>`; empty when not set.
+     * Its password and session live only in SecretStore, never here.
+     */
+    val vaultUrl: String = "",
     /**
      * The user's own work email address for "Email to work" (notes and transcripts go there from
      * the tablet's mail app, for a work computer that can't open Google). Blank = not set yet.

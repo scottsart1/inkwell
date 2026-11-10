@@ -1,0 +1,24 @@
+{
+  "name": "notes-vault",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Private notes vault for yourpitbox.com/notes (Cloudflare Worker)",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "deploy": "bash scripts/deploy.sh"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.23.0",
+    "@cloudflare/workers-types": "5.20261016.1",
+    "typescript": "5.9.3",
+    "vite": "7.3.7",
+    "vitest": "4.1.12",
+    "wrangler": "4.151.0"
+  },
+  "overrides": {
+    "vite": "7.3.7"
+  }
+}

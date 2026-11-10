@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.TabletAndroid
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -86,6 +87,8 @@ private fun DestinationRow(
             TargetChip(stringResource(R.string.sync_chip_folder), selected = folderOn, onClick = { onToggle(kind, OutputTarget.FOLDER, !folderOn) }, icon = Icons.Outlined.Folder)
             val driveOn = OutputTarget.DRIVE in targets
             TargetChip(stringResource(R.string.sync_chip_drive), selected = driveOn, onClick = { onToggle(kind, OutputTarget.DRIVE, !driveOn) }, icon = Icons.Outlined.CloudUpload)
+            val vaultOn = OutputTarget.VAULT in targets
+            TargetChip(stringResource(R.string.sync_chip_vault), selected = vaultOn, onClick = { onToggle(kind, OutputTarget.VAULT, !vaultOn) }, icon = Icons.Outlined.Lock)
         }
     }
     val c = Inkwell.colors

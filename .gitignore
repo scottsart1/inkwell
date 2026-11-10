@@ -11,3 +11,7 @@ build/
 node_modules/
 *.log
 .claude/worktrees/
+# Notes vault Worker: wrangler local state and dev secrets (never committed).
+web/notes-vault/node_modules/
+web/notes-vault/.wrangler/
+web/notes-vault/.dev.vars

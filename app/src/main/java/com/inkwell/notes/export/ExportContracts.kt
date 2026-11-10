@@ -72,8 +72,9 @@ data class SyncStatus(
 
 /**
  * Copies outputs to the destinations the user chose for each output type (notes,
- * transcripts, audio): a SAF folder (Files, SD card) and/or the user's Google Drive, so they can
- * be read on another computer. Local storage always remains the source of truth (local-first).
+ * transcripts, audio): a SAF folder (Files, SD card), the user's Google Drive and/or the private
+ * notes vault on yourpitbox.com, so they can be read on another computer. Local storage always
+ * remains the source of truth (local-first).
  */
 interface SyncManager {
     val status: StateFlow<SyncStatus>
@@ -81,7 +82,8 @@ interface SyncManager {
     /**
      * The document's title or its place in the library changed (moved, or a folder above it was
      * renamed or moved): move the copies kept in sync destinations. Unlike [onDocumentChanged]
-     * this also covers transcripts and audio, and only renames/moves the document's Drive folder.
+     * this also covers transcripts and audio, only renames/moves the document's Drive folder, and
+     * sends the vault only the new metadata.
      */
     fun onDocumentMoved(docId: String) = onDocumentChanged(docId)
     fun onTranscriptReady(docId: String, recordingId: String)
@@ -90,6 +92,8 @@ interface SyncManager {
     suspend fun syncNow(): SyncStatus
     /** Checks that Google Drive accepts uploads for the connected account; returns a human-readable result. */
     suspend fun testDrive(): Result<String>
+    /** Checks URL + password against the notes vault; returns a human-readable result. */
+    suspend fun testVault(url: String, password: String): Result<String>
     suspend fun testFolder(treeUri: Uri): Result<String>
 }
 

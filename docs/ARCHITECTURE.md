@@ -35,7 +35,7 @@ so it is unit-testable without Android.
 | `speakers` | Who spoke when, people, voiceprints, naming after a meeting | `SpeakerContracts.kt` |
 | `ocr` + `search` | ML Kit OCR + handwriting recognition, FTS index, indexing pipeline, search screen | `ocr/OcrContracts.kt`, `search/SearchScreen.kt` |
 | `pdf` | Import, render, text extraction, merge/split/extract, scanning | `PdfService.kt` |
-| `export` | Export formats, thumbnails, backup, sync to a folder / Google Drive, storage settings UI | `ExportContracts.kt`, `ui/ExportUi.kt` |
+| `export` | Export formats, thumbnails, backup, sync to a folder / Google Drive / notes vault, storage settings UI | `ExportContracts.kt`, `ui/ExportUi.kt` |
 | `whiteboard`, `typed` | Infinite canvas screen, typed document editor | `WhiteboardScreen.kt`, `TypedDocumentScreen.kt` |
 | `settings` | Settings screens, app lock | `SettingsScreen.kt`, `AppLock.kt` |
 | `ui/theme` | Design tokens (`Inkwell.colors`, `Dimens`, Figtree type) | `Theme.kt` |
@@ -64,8 +64,8 @@ Rules for contracts:
 - AI output never silently overwrites notes; insertion is always an explicit user action.
 - Long work (OCR, AI, export, sync, transcription) runs off the main thread / in WorkManager
   and never blocks writing.
-- API keys live only in `SecretStore`; never log them, never put them in settings JSON,
-  exports, or shared files. Google Drive access tokens come from Google Play services on demand
+- API keys and the vault password live only in `SecretStore`; never log them, never put them in
+  settings JSON, exports, or shared files. Google Drive access tokens come from Google Play services on demand
   and are never stored by Inkwell (see `docs/GOOGLE_DRIVE.md`).
 - Voiceprints (speaker embeddings, reference clips) are biometric: encrypted, under
   `noBackupFilesDir`, never in the database, backups, exports or sync. Only names travel.
@@ -103,6 +103,17 @@ Access is the `drive.file` scope through Google Play services (`PlayServicesDriv
 or password is stored. `DriveClient` speaks Drive v3 over OkHttp; `DriveLayout` finds Inkwell's
 folders and files by private app properties, so renames and moves follow the document. The
 one-time Google Cloud registration is described in `docs/GOOGLE_DRIVE.md`.
+
+## Notes vault
+
+`OutputTarget.VAULT` copies notes (metadata, text, `notes.pdf`, `notes.md`), transcripts and
+audio to the private notes vault, a Cloudflare Worker at `https://yourpitbox.com/notes/<LINK_ID>`
+(deployed separately; protocol in `docs/VAULT_API.md`). `DestinationPrefs.vaultUrl` holds the
+private link; the password and session token live only in `SecretStore`, and `VaultPassword`
+ties the password to the link it was entered for. `VaultClient` speaks the API over OkHttp
+(never follows a redirect except the site moving between `www.host` and `host`), and
+`SyncEngine` holds vault uploads after a refused password or a server lockout so the app never
+locks the user out.
 
 ## Email to work
 

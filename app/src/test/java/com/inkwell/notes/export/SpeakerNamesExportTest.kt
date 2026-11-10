@@ -79,7 +79,7 @@ class SpeakerNamesExportTest {
         assertFalse(xml.contains("S1"))
     }
 
-    @Test fun folderAndDriveTranscriptsCarryNamesNotLabels() {
+    @Test fun folderDriveAndVaultTranscriptsCarryNamesNotLabels() {
         val md = SyncPayloads.transcriptMarkdown(recording, segments, "Notes", TimeZone.getTimeZone("UTC"))
         assertTrue(md, md.contains("**[0:01]** **Priya:** Let's start."))
         assertTrue(md, md.contains("**[0:04]** **Speaker 2:** Agreed."))
@@ -88,5 +88,8 @@ class SpeakerNamesExportTest {
         assertTrue(html, html.contains("<b>Priya:</b> Let&#39;s start."))
         assertTrue(html, html.contains("<b>Speaker 2:</b> Agreed."))
         assertFalse("Google Drive never sees the voice labels", html.contains("S1"))
+        val upsert = SyncPayloads.transcriptUpsert(recording, segments, "openai:gpt-4o-transcribe-diarize")
+        assertEquals(listOf("Priya", "Speaker 2", "Priya"), upsert.segments.map { it.speaker })
+        assertNull("the vault never sees the voice labels", upsert.segments.firstOrNull { it.speaker == "S1" })
     }
 }

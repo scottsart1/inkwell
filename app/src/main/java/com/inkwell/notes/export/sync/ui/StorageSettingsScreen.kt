@@ -171,6 +171,19 @@ internal fun StorageSettingsScreen(modifier: Modifier = Modifier) {
                     },
                     onCopied = { vm.notice = null },
                 )
+                VaultCard(
+                    prefs = prefs,
+                    hasPassword = vm.hasPassword,
+                    hasAnyPassword = vm.hasAnyPassword,
+                    check = vm.vaultCheck,
+                    onUrlChanged = vm::onUrlChanged,
+                    onUrlCommit = vm::commitUrl,
+                    onPasswordChanged = vm::onPasswordChanged,
+                    onPasswordCommit = vm::commitPassword,
+                    onForgetPassword = vm::forgetPassword,
+                    onTest = vm::testVault,
+                    onBrowserError = { vm.notice = context.getString(R.string.sync_vault_browser_error) },
+                )
                 WorkEmailCard(saved = prefs.workEmail, onSave = vm::setWorkEmail)
                 SyncCard(
                     prefs = prefs,

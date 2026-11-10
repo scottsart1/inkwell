@@ -18,6 +18,7 @@ import com.inkwell.notes.core.model.AppSettings
 import com.inkwell.notes.core.model.DestinationPrefs
 import com.inkwell.notes.core.model.NotesExportFormat
 import com.inkwell.notes.core.model.OutputTarget
+import com.inkwell.notes.core.settings.SecretStore
 import com.inkwell.notes.export.SyncManagerImpl
 import com.inkwell.notes.export.SyncStatus
 import com.inkwell.notes.export.backup.AutoBackupStatus
@@ -27,13 +28,19 @@ import com.inkwell.notes.export.sync.DriveException
 import com.inkwell.notes.export.sync.PlayServicesDriveAuth
 import com.inkwell.notes.export.sync.SafFolderAccess
 import com.inkwell.notes.export.sync.SyncKind
+import com.inkwell.notes.export.sync.VaultPassword
+import com.inkwell.notes.export.sync.VaultUrl
 import com.inkwell.notes.export.sync.targetsFor
 import com.inkwell.notes.export.sync.withTargets
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -68,6 +75,8 @@ internal data class DriveSetupInfo(val packageName: String, val sha1: String?)
 /**
  * State and actions of "Storage, sync & backup". Google Drive access is held by Google Play
  * services; this screen only starts the consent flow and keeps the connected account's email.
+ * Never holds the vault password after it is saved; [hasPassword] only says whether one is saved
+ * for the current vault link.
  */
 internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel() {
     private val context: Context get() = graph.context
@@ -96,6 +105,15 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
     var driveSharing by mutableStateOf(false)
         private set
     private var driveFor: SyncKind? = null
+    var hasPassword by mutableStateOf(false)
+        private set
+    /** A password is saved at all (perhaps for another vault link): it can still be forgotten. */
+    var hasAnyPassword by mutableStateOf(false)
+        private set
+    /** The vault link saved when the screen opened: links saved while typing never claim a password. */
+    private val openingLink = graph.settings.current.destinations.vaultUrl
+    var vaultCheck by mutableStateOf<CheckState>(CheckState.Idle)
+        private set
     var folderCheck by mutableStateOf<CheckState>(CheckState.Idle)
         private set
     var syncRequested by mutableStateOf(false)
@@ -108,6 +126,13 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
     /** One-off problem to show (picker unavailable, permission refused...). */
     var notice by mutableStateOf<String?>(null)
 
+    private var passwordJob: Job? = null
+    private var pendingPassword: String? = null
+    private var urlJob: Job? = null
+    private var pendingUrl: String? = null
+    /** Bumped when the password is saved or forgotten here, so an older [refreshHasPassword] can't undo it. */
+    private var passwordEdits = 0
+
     init {
         viewModelScope.launch {
             autoBackup = withContext(Dispatchers.IO) { runCatching { uiPrefs.autoBackup() }.getOrNull() }
@@ -115,6 +140,24 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
         }
         // The link appears once the folder exists and is shared (after connecting, a copy, a test).
         viewModelScope.launch { status.collect { refreshDriveLink() } }
+        // A saved password only counts for the link it belongs to; the link can change here or
+        // in the background (the vault moved between www.host and host).
+        viewModelScope.launch {
+            settings.map { it.destinations.vaultUrl }.distinctUntilChanged().collect { refreshHasPassword() }
+        }
+    }
+
+    private suspend fun refreshHasPassword() {
+        val edits = passwordEdits
+        val link = settings.value.destinations.vaultUrl
+        val (has, any) = withContext(Dispatchers.IO) {
+            runCatching { VaultPassword.savedFor(graph.secrets, link) }.getOrDefault(false) to
+                runCatching { graph.secrets.has(SecretStore.VAULT_PASSWORD) }.getOrDefault(false)
+        }
+        if (edits == passwordEdits) {
+            hasPassword = has
+            hasAnyPassword = any
+        }
     }
 
     private suspend fun refreshDriveLink() {
@@ -341,6 +384,123 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
         graph.appScope.launch { impl?.disconnectDrive() }
     }
 
+    // ------------------------------------------------------------------ notes vault
+
+    /** Saves a valid link shortly after typing stops; an empty field clears it. */
+    fun onUrlChanged(text: String) {
+        urlJob?.cancel()
+        vaultCheck = CheckState.Idle
+        pendingUrl = text
+        urlJob = viewModelScope.launch {
+            delay(URL_SAVE_DELAY_MS)
+            saveUrl(text)
+        }
+    }
+
+    fun commitUrl(text: String) {
+        urlJob?.cancel()
+        viewModelScope.launch { saveUrl(text) }
+    }
+
+    private suspend fun saveUrl(text: String) {
+        try {
+            val value = when (val p = VaultUrl.parse(text)) {
+                is VaultUrl.Parsed.Valid -> p.endpoint.baseUrl
+                VaultUrl.Parsed.Empty -> ""
+                is VaultUrl.Parsed.Invalid -> return
+            }
+            val oldLink = settings.value.destinations.vaultUrl
+            if (value != oldLink) {
+                // The saved password stays tied to the link it was for and never goes to another
+                // one; going back to that link brings it back (hasPassword follows the saved link).
+                // Never forgotten here: this runs on every pause while the link is being edited. Only
+                // the link the screen opened with claims a password not yet tied to one, never a
+                // half-typed link saved on the way.
+                if (oldLink == openingLink) {
+                    withContext(Dispatchers.IO) { runCatching { VaultPassword.keepWith(graph.secrets, oldLink) } }
+                }
+                graph.settings.update { it.copy(destinations = it.destinations.copy(vaultUrl = value)) }
+            }
+        } finally {
+            // Only now: until the link is saved, a password typed meanwhile is for it (passwordVault).
+            if (pendingUrl == text) pendingUrl = null
+        }
+    }
+
+    /** Saves the password to SecretStore shortly after typing stops. An empty field keeps the saved one. */
+    fun onPasswordChanged(text: String) {
+        passwordJob?.cancel()
+        vaultCheck = CheckState.Idle
+        if (text.isEmpty()) {
+            pendingPassword = null
+            return
+        }
+        pendingPassword = text
+        passwordJob = viewModelScope.launch {
+            delay(PASSWORD_SAVE_DELAY_MS)
+            flushPassword()
+        }
+    }
+
+    fun commitPassword() {
+        passwordJob?.cancel()
+        viewModelScope.launch { flushPassword() }
+    }
+
+    private suspend fun flushPassword() {
+        val text = pendingPassword ?: return
+        pendingPassword = null
+        val vault = passwordVault()
+        val saved = withContext(Dispatchers.IO) {
+            runCatching { VaultPassword.save(graph.secrets, text, vault) }.isSuccess
+        }
+        if (saved) {
+            passwordEdits++
+            hasPassword = true
+            hasAnyPassword = true
+            impl?.onVaultCredentialsChanged()
+        } else {
+            notice = context.getString(R.string.sync_password_store_failed)
+        }
+    }
+
+    /** The vault a password typed now belongs to: the link in the field (still being typed, or saved). */
+    private fun passwordVault() =
+        pendingUrl?.let { VaultUrl.endpointOrNull(it) } ?: VaultUrl.endpointOrNull(settings.value.destinations.vaultUrl)
+
+    fun forgetPassword() {
+        passwordJob?.cancel()
+        pendingPassword = null
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { VaultPassword.forget(graph.secrets) }
+            }
+            passwordEdits++
+            hasPassword = false
+            hasAnyPassword = false
+            vaultCheck = CheckState.Idle
+            // Releases a hold or lockout from the old password and retries what waited for it.
+            impl?.onVaultCredentialsChanged()
+        }
+    }
+
+    /** Test connection with what is in the fields (an empty password field uses the saved one). */
+    fun testVault(urlText: String, passwordText: String) {
+        if (vaultCheck == CheckState.Running) return
+        vaultCheck = CheckState.Running
+        urlJob?.cancel()
+        passwordJob?.cancel()
+        viewModelScope.launch {
+            saveUrl(urlText)
+            // A password typed and tested now is for this link: save it for it, so sync sends
+            // what passed the test (and the test keeps its session and releases holds).
+            if (passwordText.isNotEmpty()) pendingPassword = passwordText
+            flushPassword()
+            val r = graph.sync.testVault(urlText, passwordText)
+            vaultCheck = r.fold({ CheckState.Ok(it) }, { CheckState.Failed(it.message ?: "The connection test failed.") })
+        }
+    }
+
     // ------------------------------------------------------------------ sync
 
     /** Runs in the app scope so leaving the screen does not cancel it. */
@@ -399,7 +559,28 @@ internal class StorageSettingsViewModel(private val graph: AppGraph) : ViewModel
         }
     }
 
+    override fun onCleared() {
+        // Keep what was typed: finish pending saves outside the closing screen.
+        val vault = passwordVault()
+        val url = pendingUrl
+        val password = pendingPassword
+        pendingPassword = null
+        if (url != null || password != null) {
+            // In order: the link first, then the password typed for it.
+            graph.appScope.launch {
+                if (url != null) saveUrl(url)
+                if (password != null) {
+                    withContext(Dispatchers.IO) { runCatching { VaultPassword.save(graph.secrets, password, vault) } }
+                    impl?.onVaultCredentialsChanged()
+                }
+            }
+        }
+        super.onCleared()
+    }
+
     private companion object {
+        const val URL_SAVE_DELAY_MS = 900L
+        const val PASSWORD_SAVE_DELAY_MS = 700L
         const val AUTO_BACKUP_DAYS = 1
 
         /** SHA-1 of the certificate this app is signed with, as Google Cloud asks for it ("AB:CD:..."). */
