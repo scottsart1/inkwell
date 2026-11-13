@@ -35,11 +35,21 @@ class VaultUrlAndPayloadTest {
     }
 
     @Test
+    fun `the plain notes address is accepted, as the browser uses it`() {
+        assertEquals("https://yourpitbox.com/notes", ok("https://yourpitbox.com/notes"))
+        assertEquals("https://yourpitbox.com/notes", ok("https://yourpitbox.com/notes/"))
+        assertEquals("https://yourpitbox.com/notes", ok("yourpitbox.com/notes"))
+        assertEquals("https://yourpitbox.com/notes", ok("HTTPS://YourPitBox.com/Notes?x=1#top"))
+        assertEquals(
+            "https://yourpitbox.com/notes/api/session",
+            VaultUrl.endpointOrNull("https://yourpitbox.com/notes")!!.api("session").toString(),
+        )
+    }
+
+    @Test
     fun `rejects anything that is not https host notes link`() {
         invalid("http://yourpitbox.com/notes/abc")
         invalid("ftp://yourpitbox.com/notes/abc")
-        invalid("https://yourpitbox.com/notes")
-        invalid("https://yourpitbox.com/notes/")
         invalid("https://yourpitbox.com/")
         invalid("https://yourpitbox.com/vault/abc")
         invalid("https://yourpitbox.com/notes/abc/api/ping")

@@ -65,7 +65,7 @@
 
     <string name="sync_vault_title">Notes vault</string>
     <string name="sync_vault_subtitle">Your private page on yourpitbox.com, readable on any computer. The link and password stay on this tablet.</string>
-    <string name="sync_vault_url">Private link</string>
+    <string name="sync_vault_url">Notes page address</string>
     <string name="sync_vault_password">Password</string>
     <string name="sync_vault_password_saved">Saved. Type a new one to replace it.</string>
     <string name="sync_vault_password_hint">Vault password</string>
@@ -74,7 +74,7 @@
     <string name="sync_vault_forget">Forget password</string>
     <string name="sync_vault_test">Test connection</string>
     <string name="sync_vault_open">Open vault in browser</string>
-    <string name="sync_vault_needs_setup">Add the private link and password to start uploading.</string>
+    <string name="sync_vault_needs_setup">Add the notes page address (yourpitbox.com/notes) and password to start uploading.</string>
     <string name="sync_vault_browser_error">No browser is available to open the vault.</string>
 
     <string name="sync_section_title">Sync</string>
