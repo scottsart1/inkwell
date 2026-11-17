@@ -90,7 +90,8 @@ class VaultDevServerTest {
         } catch (e: VaultException.WrongPassword) {
             // 401 {"error":"invalid_password"} from the real Worker
         }
-        val wrongLink = VaultEndpoint.insecureForTests(endpoint().base.newBuilder().setPathSegment(1, "nope").build())
+        // Works whether the dev URL is the plain /notes address or a private link.
+        val wrongLink = VaultEndpoint.insecureForTests(endpoint().base.newBuilder().encodedPath("/notes/nope").build())
         try {
             VaultClient(http, wrongLink, MemoryCredentials(devPassword)).ping()
             fail("expected NotAVault")

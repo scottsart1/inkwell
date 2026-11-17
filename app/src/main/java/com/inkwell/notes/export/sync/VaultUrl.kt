@@ -5,7 +5,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.security.MessageDigest
 
 /**
- * A validated notes-vault base: `https://host[:port]/notes/<linkId>` (docs/VAULT_API.md).
+ * A validated notes-vault base: `https://host[:port]/notes` or `https://host[:port]/notes/<linkId>`
+ * (docs/VAULT_API.md: the Worker serves the same API under both).
  * Only [VaultUrl.parse] creates HTTPS endpoints; [insecureForTests] exists so JVM tests can talk
  * to a plain-HTTP MockWebServer.
  */
@@ -40,7 +41,7 @@ class VaultEndpoint private constructor(val base: HttpUrl) {
 
 /** Normalises and validates what the user typed or pasted as the vault link. */
 object VaultUrl {
-    const val PLACEHOLDER = "https://yourpitbox.com/notes/<your private link>"
+    const val PLACEHOLDER = "https://yourpitbox.com/notes"
 
     sealed interface Parsed {
         data class Valid(val endpoint: VaultEndpoint) : Parsed
@@ -50,7 +51,7 @@ object VaultUrl {
 
     /**
      * Trims, drops a query, fragment and trailing slashes, lower-cases scheme and host, and requires
-     * exactly `https://host/notes/<linkId>`. A missing scheme is taken as https.
+     * `https://host/notes` or `https://host/notes/<linkId>`. A missing scheme is taken as https.
      */
     fun parse(raw: String): Parsed {
         var text = raw.trim()
@@ -70,15 +71,16 @@ object VaultUrl {
         val url = text.toHttpUrlOrNull() ?: return Parsed.Invalid(FORMAT_HINT)
         if (url.host.isBlank() || url.username.isNotEmpty() || url.password.isNotEmpty()) return Parsed.Invalid(FORMAT_HINT)
         val segments = url.pathSegments.filter { it.isNotEmpty() }
-        if (segments.size != 2 || !segments[0].equals("notes", ignoreCase = true)) return Parsed.Invalid(FORMAT_HINT)
-        val linkId = segments[1]
-        if (linkId.isBlank() || linkId == "." || linkId == "..") return Parsed.Invalid(FORMAT_HINT)
+        if (segments.size !in 1..2 || !segments[0].equals("notes", ignoreCase = true)) return Parsed.Invalid(FORMAT_HINT)
+        // The plain address (the same page the browser opens) or the private link.
+        val linkId = segments.getOrNull(1)
+        if (linkId != null && (linkId.isBlank() || linkId == "." || linkId == "..")) return Parsed.Invalid(FORMAT_HINT)
         val normalized = HttpUrl.Builder()
             .scheme("https")
             .host(url.host)
             .port(url.port)
             .addPathSegment("notes")
-            .addPathSegment(linkId)
+            .apply { if (linkId != null) addPathSegment(linkId) }
             .build()
         return Parsed.Valid(VaultEndpoint.of(normalized))
     }
@@ -88,7 +90,7 @@ object VaultUrl {
 
     fun endpointOrNull(raw: String): VaultEndpoint? = (parse(raw) as? Parsed.Valid)?.endpoint
 
-    const val FORMAT_HINT = "Use the full private link, like https://yourpitbox.com/notes/<your private link>."
+    const val FORMAT_HINT = "Use the address of your notes page, like https://yourpitbox.com/notes."
 }
 
 /** Which redirects from the vault are followed. The client never follows one blindly: the token must not travel. Pure. */
