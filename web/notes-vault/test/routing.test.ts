@@ -137,3 +137,50 @@ describe("the plain /notes entry", () => {
     expect((await call(`${ORIGIN}/notes/api/docs`, { headers: bearer(t) })).status).toBe(200);
   });
 });
+
+describe("page visits to the sign-in and sign-out addresses", () => {
+  const html = { Accept: "text/html,application/xhtml+xml" };
+
+  it("a page load of /notes/api/session goes back to /notes, signing no one in", async () => {
+    for (const path of ["/notes/api/session", "/notes/api/logout"]) {
+      const res = await call(ORIGIN + path, { headers: html, redirect: "manual" });
+      expect(res.status, path).toBe(303);
+      expect(res.headers.get("Location")).toBe("/notes");
+      expect(res.headers.get("Set-Cookie")).toBeNull();
+    }
+  });
+
+  it("under the private link it goes back to the private page", async () => {
+    const res = await call(`${BASE}/api/session`, { headers: html, redirect: "manual" });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("Location")).toBe(`/notes/${LINK_ID}`);
+  });
+
+  it("the empty network-confirmation form post goes back too", async () => {
+    const res = await call(`${ORIGIN}/notes/api/session`, {
+      method: "POST",
+      headers: { ...html, "Content-Type": "application/x-www-form-urlencoded" },
+      body: "",
+      redirect: "manual",
+    });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("Location")).toBe("/notes");
+    expect(res.headers.get("Set-Cookie")).toBeNull();
+  });
+
+  it("the page's and the app's JSON requests are unchanged", async () => {
+    expect((await call(`${ORIGIN}/notes/api/session`)).status).toBe(405);
+    const res = await call(`${ORIGIN}/notes/api/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "CF-Connecting-IP": "10.200.0.9" },
+      body: JSON.stringify({ password: env.NOTES_PASSWORD }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("the page carries the network-confirmation button and form", async () => {
+    const page = await (await call(`${ORIGIN}/notes`)).text();
+    expect(page).toMatch(/<button id="network-btn"[^>]*hidden/);
+    expect(page).toMatch(/<form id="network-form" method="post" hidden>/);
+  });
+});
