@@ -384,7 +384,7 @@ async function deleteFile(env: Env, docId: string, name: string): Promise<Respon
 }
 
 // ---------------------------------------------------------------------------------------
-// Router for {base}/api/* (authentication already done by the caller)
+// Router for {base}/api/* (no password: the caller has only checked the origin)
 
 export async function handleApi(request: Request, env: Env, parts: string[], url: URL): Promise<Response> {
   const method = request.method.toUpperCase();

@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { parseRange } from "../src/api";
-import { ORIGIN, bearer, call, docBody, getJson, login, putJson, token, uid } from "./helpers";
+import { ORIGIN, bearer, call, docBody, getJson, putJson, token, uid } from "./helpers";
 
 async function upload(path: string, data: Uint8Array, headers: Record<string, string> = {}) {
   return call(path, {
@@ -162,19 +162,17 @@ describe("files", () => {
     expect(parseRange("items=0-1", 10)).toBeNull();
   });
 
-  it("download by cookie works for the web UI (GET needs no Origin)", async () => {
+  it("downloads work for the web UI with no credentials (GET needs no Origin)", async () => {
     const id = uid();
     await upload(`/api/docs/${id}/files/notes.md`, new TextEncoder().encode("# x"), { "Content-Type": "text/markdown" });
-    const { cookie } = await login();
-    const dl = await call(`/api/docs/${id}/files/notes.md`, { headers: { Cookie: cookie } });
+    const dl = await call(`/api/docs/${id}/files/notes.md`);
     expect(dl.status).toBe(200);
     expect(await dl.text()).toBe("# x");
   });
 
-  it("missing files are 404 and need auth", async () => {
+  it("missing files are 404", async () => {
     const id = uid();
-    expect((await call(`/api/docs/${id}/files/none.pdf`)).status).toBe(401);
-    const res = await call(`/api/docs/${id}/files/none.pdf`, { headers: bearer(await token()) });
+    const res = await call(`/api/docs/${id}/files/none.pdf`);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "not_found" });
   });
@@ -193,21 +191,22 @@ describe("files", () => {
     expect((await call(`/api/docs/${id}/files/notes.pdf`, { headers: bearer(await token()) })).status).toBe(404);
   });
 
-  it("cookie uploads need the same Origin", async () => {
+  it("uploads from another website are refused; the page's own and the app's work", async () => {
     const id = uid();
-    const { cookie } = await login();
     const data = new Uint8Array([1, 2, 3]);
-    const without = await call(`/api/docs/${id}/files/x.bin`, {
+    const foreign = await call(`/api/docs/${id}/files/x.bin`, {
       method: "PUT",
-      headers: { Cookie: cookie, "Content-Length": "3" },
+      headers: { Origin: "https://evil.example", "Content-Length": "3" },
       body: data,
     });
-    expect(without.status).toBe(403);
+    expect(foreign.status).toBe(403);
     const withOrigin = await call(`/api/docs/${id}/files/x.bin`, {
       method: "PUT",
-      headers: { Cookie: cookie, Origin: ORIGIN, "Content-Length": "3" },
+      headers: { Origin: ORIGIN, "Content-Length": "3" },
       body: data,
     });
     expect(withOrigin.status).toBe(200);
+    const fromApp = await call(`/api/docs/${id}/files/y.bin`, { method: "PUT", headers: { "Content-Length": "3" }, body: data });
+    expect(fromApp.status).toBe(200);
   });
 });

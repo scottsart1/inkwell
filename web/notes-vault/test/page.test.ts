@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BASE, LINK_ID, bearer, call, login, token } from "./helpers";
+import { BASE, LINK_ID, bearer, call, token } from "./helpers";
 
 const EXPECTED_CSP_PARTS = [
   "default-src 'none'",
@@ -32,7 +32,7 @@ function expectSecurityHeaders(res: Response): string {
 
 describe("web UI", () => {
   for (const suffix of ["", "/"]) {
-    it(`GET /notes/<link>${suffix} serves the locked page with a fresh nonce`, async () => {
+    it(`GET /notes/<link>${suffix} serves the notes page, with no sign-in, and a fresh nonce`, async () => {
       const res = await call(BASE + suffix);
       expect(res.status).toBe(200);
       expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
@@ -40,13 +40,13 @@ describe("web UI", () => {
       const html = await res.text();
 
       expect(html).toContain("<title>Notes</title>");
-      expect(html).toMatch(/<label[^>]*for="password"[^>]*>Password<\/label>/);
-      expect(html).toMatch(/<input[^>]*id="password"[^>]*type="password"/);
-      expect(html).toMatch(/<button[^>]*type="submit"[^>]*>Unlock<\/button>/);
-      expect(html).toContain("This private link is only for you.");
-      expect(html).toContain('data-signed-in="false"');
       expect(html).toContain("Your Pit Box · Notes");
-      expect(html).toMatch(/<button[^>]*id="lock-btn"[^>]*>Lock<\/button>/);
+      expect(html).toMatch(/<div id="app-view" class="app">/);
+      expect(html).toMatch(/<input[^>]*id="search"/);
+      expect(html).not.toMatch(/type="password"/);
+      expect(html).not.toContain("login-view");
+      expect(html).not.toContain("lock-btn");
+      expect(html).not.toContain("Unlock");
 
       // Every script and style element carries this response's nonce; no external scripts.
       const scripts = html.match(/<script\b[^>]*>/g) ?? [];
@@ -71,17 +71,6 @@ describe("web UI", () => {
     const a = expectSecurityHeaders(await call(BASE));
     const b = expectSecurityHeaders(await call(BASE));
     expect(a).not.toBe(b);
-  });
-
-  it("renders the signed-in shell when the session cookie is valid", async () => {
-    const { cookie } = await login();
-    const html = await (await call(BASE, { headers: { Cookie: cookie } })).text();
-    expect(html).toContain('data-signed-in="true"');
-    expect(html).toMatch(/<main id="login-view" class="login" hidden>/);
-    expect(html).toMatch(/<div id="app-view" class="app">/);
-    // A bearer token is not a browser session.
-    const viaBearer = await (await call(BASE, { headers: bearer(await token()) })).text();
-    expect(viaBearer).toContain('data-signed-in="false"');
   });
 
   it("uses the Inkwell palette and dark mode", async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderMarkdown as md } from "../src/markdown";
-import { BASE, ORIGIN, bearer, call, login, token, uid } from "./helpers";
+import { BASE, ORIGIN, bearer, call, token, uid } from "./helpers";
 
 describe("hardening", () => {
   it("the Markdown renderer never emits a tag, handler or scheme from its input", () => {
@@ -37,7 +37,7 @@ describe("hardening", () => {
     expect(md("`a`0`b`")).toBe("<p><code>a</code>0<code>b</code></p>");
   });
 
-  it("odd paths, mixed credentials and oversized logins are refused", async () => {
+  it("odd paths and cross-site deletes are refused", async () => {
     const t = await token();
     // Encoded slash in a doc id, dot segments, upper-case method, trailing slashes.
     for (const p of ["/api/docs/a%2Fb", "/api/docs/..", "/api/docs/./x", "/api/docs/x/files/..%2F..%2Fetc", "/api/docs/x/transcripts/%00"]) {
@@ -46,17 +46,13 @@ describe("hardening", () => {
     }
     expect((await call("/api/ping/", { headers: bearer(t) })).status).toBe(200);
     expect((await call("/api//ping", { headers: bearer(t) })).status).toBe(404);
-    // Bearer with cookie: a wrong bearer never falls back to the cookie even on GET.
-    const { cookie } = await login();
-    expect((await call("/api/ping", { headers: { Cookie: cookie, Authorization: "Basic abc" } })).status).toBe(401);
-    // Cookie DELETE with same origin works; cookie DELETE of a file with foreign origin refused.
+    // Whatever Authorization header comes along is ignored.
+    expect((await call("/api/ping", { headers: { Authorization: "Basic abc" } })).status).toBe(200);
+    // DELETE from the page's own origin works; from another website it is refused.
     const id = uid();
     await call(`/api/docs/${id}`, { method: "PUT", headers: { ...bearer(t), "Content-Type": "application/json" }, body: JSON.stringify({ title: "t", kind: "TYPED", createdAt: 1, modifiedAt: 1 }) });
-    expect((await call(`/api/docs/${id}`, { method: "DELETE", headers: { Cookie: cookie, Origin: "https://evil.example" } })).status).toBe(403);
-    expect((await call(`/api/docs/${id}`, { method: "DELETE", headers: { Cookie: cookie, Origin: ORIGIN } })).status).toBe(200);
-    // Login with a huge body is refused, with charset content types accepted.
-    const big = await call("/api/session", { method: "POST", headers: { "Content-Type": "application/json; charset=utf-8", "CF-Connecting-IP": "10.9.9.9" }, body: JSON.stringify({ password: "x".repeat(5000) }) });
-    expect(big.status).toBe(413);
+    expect((await call(`/api/docs/${id}`, { method: "DELETE", headers: { Origin: "https://evil.example" } })).status).toBe(403);
+    expect((await call(`/api/docs/${id}`, { method: "DELETE", headers: { Origin: ORIGIN } })).status).toBe(200);
     // Query search with weird input.
     expect((await call(`/api/docs?q=${encodeURIComponent("%_\\'\"; DROP TABLE docs; --")}`, { headers: bearer(t) })).status).toBe(200);
     expect(BASE.length).toBeGreaterThan(0);

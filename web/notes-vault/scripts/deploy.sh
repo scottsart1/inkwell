@@ -3,17 +3,15 @@
 #   1. creates the D1 database "notes-vault" and the R2 bucket "notes-vault-files" if missing
 #   2. fills in database_id in wrangler.toml if it still holds the placeholder
 #   3. applies D1 migrations to the remote database
-#   4. sets the Worker secrets NOTES_PASSWORD, NOTES_LINK_ID, SESSION_SECRET
-#   5. runs `wrangler deploy`
+#   4. sets the Worker secret NOTES_LINK_ID
+#   5. runs `wrangler deploy`, then removes the old NOTES_PASSWORD and SESSION_SECRET secrets
+#      (the vault no longer has a password)
 #
 # Environment:
 #   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID  wrangler credentials (or a prior `wrangler login`)
-#   NOTES_PASSWORD   required: the vault password (changing it signs every device out)
 #   NOTES_LINK_ID    optional: the private link segment. If unset, an existing secret is kept;
 #                    if the Worker has none yet, a random 32-character id is generated and the
 #                    private URL is printed once (local runs only, never in CI logs).
-#   SESSION_SECRET   optional: HMAC key for session tokens. If unset, an existing secret is
-#                    kept; otherwise a random one is generated (never printed).
 #
 # Secret values are never echoed: they are piped to `wrangler secret put` on stdin.
 set -euo pipefail
@@ -34,7 +32,6 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 in_ci() { [[ "${GITHUB_ACTIONS:-}" == "true" || "${CI:-}" == "true" ]]; }
 
 random_id() { openssl rand -base64 48 | tr -d '\n=' | tr '+/' '-_' | cut -c1-32; }
-random_secret() { openssl rand -base64 48 | tr -d '\n'; }
 
 # Prints the JSON value found in wrangler's stdout (it may print banners around it).
 extract_json() {
@@ -50,10 +47,6 @@ extract_json() {
   '
 }
 
-[[ -n "${NOTES_PASSWORD:-}" ]] || die "NOTES_PASSWORD must be set (the vault password)."
-if (( ${#NOTES_PASSWORD} < 12 )); then
-  log "warning: NOTES_PASSWORD is shorter than 12 characters; a long passphrase is strongly recommended."
-fi
 if [[ -n "${NOTES_LINK_ID:-}" && ! "${NOTES_LINK_ID}" =~ ^[A-Za-z0-9_-]{16,128}$ ]]; then
   die "NOTES_LINK_ID must be 16-128 characters of [A-Za-z0-9_-]."
 fi
@@ -63,13 +56,13 @@ command -v node >/dev/null || die "node is required."
 if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   # Belt and braces: GitHub masks repository secrets already; this also covers values
   # that reach the script another way. (Only GitHub understands this command.)
-  for v in NOTES_PASSWORD NOTES_LINK_ID SESSION_SECRET; do
+  for v in NOTES_LINK_ID; do
     if [[ -n "${!v:-}" ]]; then echo "::add-mask::${!v}"; fi
   done
 fi
 
 # Names (never values) of the Worker's current secrets: unset inputs keep what exists, so
-# a deploy never silently changes the private link or signs devices out.
+# a deploy never silently changes the private link.
 if SECRETS_OUT="$("${WRANGLER[@]}" secret list --name "$WORKER" --format json 2>&1)"; then
   EXISTING_SECRETS="$(printf '%s' "$SECRETS_OUT" | extract_json)" || die "could not parse \`wrangler secret list\` output."
 elif grep -qiE "10007|does not exist|not found" <<<"$SECRETS_OUT"; then
@@ -158,8 +151,6 @@ put_secret() {
   printf '%s' "$value" | "${WRANGLER[@]}" secret put "$name" --name "$WORKER" >/dev/null
 }
 
-put_secret NOTES_PASSWORD "$NOTES_PASSWORD"
-
 PRINT_URL=""
 case "$LINK_ACTION" in
   set) put_secret NOTES_LINK_ID "$NOTES_LINK_ID" ;;
@@ -171,18 +162,20 @@ case "$LINK_ACTION" in
     ;;
 esac
 
-if [[ -n "${SESSION_SECRET:-}" ]]; then
-  put_secret SESSION_SECRET "$SESSION_SECRET"
-elif has_secret SESSION_SECRET; then
-  log "Keeping the existing SESSION_SECRET secret"
-else
-  put_secret SESSION_SECRET "$(random_secret)"
-fi
-
 # ---------------------------------------------------------------------------------------
 # 5. Deploy
 log "Deploying the Worker"
 "${WRANGLER[@]}" deploy >&2
+
+# The vault has no password any more: remove what earlier versions stored. Not fatal, since
+# the Worker ignores them either way.
+for old in NOTES_PASSWORD SESSION_SECRET; do
+  if has_secret "$old"; then
+    log "Removing the old $old secret"
+    printf 'y\n' | "${WRANGLER[@]}" secret delete "$old" --name "$WORKER" >/dev/null 2>&1 \
+      || log "warning: could not remove $old (unused, harmless): npx wrangler secret delete $old --name $WORKER"
+  fi
+done
 
 if [[ -n "$PRINT_URL" ]]; then
   printf '\nYour private vault URL (shown only this once - save it in your password manager):\n  %s\n\n' "$PRINT_URL"

@@ -6,10 +6,10 @@ import { renderMarkdown } from "./markdown";
  * The link id is never embedded: the script derives its API base from location.pathname.
  */
 
-const LOCK_ICON =
+const NOTES_ICON =
   '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">' +
   '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ' +
-  'd="M7.5 10.5V7.5a4.5 4.5 0 0 1 9 0v3M6.5 10.5h11a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1zM12 14.5v2"/></svg>';
+  'd="M7 3.5h10a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5zM9 8h6M9 11.5h6M9 15h4"/></svg>';
 
 const CSS = String.raw`
 :root {
@@ -34,27 +34,12 @@ body { background: var(--ground); color: var(--ink); font: 15px/1.5 var(--font);
 .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button, input { font: inherit; color: inherit; }
-.btn { min-height: 44px; padding: 0 18px; border-radius: var(--r-s); border: 1px solid var(--outline); background: var(--surface); color: var(--ink); font-weight: 600; cursor: pointer; }
-.btn:hover { background: var(--surface-alt); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.btn.primary:hover { background: var(--accent); opacity: .92; }
-.btn:disabled { opacity: .6; cursor: progress; }
 .input { width: 100%; min-height: 44px; padding: 0 12px; border-radius: var(--r-s); border: 1px solid var(--outline); background: var(--surface); color: var(--ink); }
 .input::placeholder { color: var(--muted); opacity: 1; }
 .input:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
 .muted { color: var(--muted); }
 
-/* Locked */
-.login { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 24px 16px; }
-.card { width: 100%; max-width: 380px; background: var(--surface); border: 1px solid var(--outline); border-radius: var(--r-l); padding: 32px 28px 28px; }
-.card h1 { margin: 0 0 24px; font-size: 26px; line-height: 32px; font-weight: 600; letter-spacing: -0.3px; display: flex; align-items: center; gap: 10px; }
-.card h1 svg { color: var(--accent); }
-.label { display: block; margin: 0 0 6px; font-size: 14px; font-weight: 500; }
-.card .btn { width: 100%; margin-top: 16px; }
-.error { margin: 10px 0 0; color: var(--danger); font-size: 14px; }
-.hint { margin: 20px 0 0; color: var(--muted); font-size: 13px; text-align: center; }
-
-/* Unlocked */
+/* App */
 .app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .topbar { display: flex; align-items: center; gap: 16px; padding: 10px 24px; background: var(--surface); border-bottom: 1px solid var(--outline); }
 .brand { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 17px; line-height: 24px; font-weight: 600; white-space: nowrap; }
@@ -142,7 +127,7 @@ button, input { font: inherit; color: inherit; }
   .panel { padding: 16px; }
 }
 @media (prefers-reduced-motion: no-preference) {
-  .doc-item, .btn, .ts { transition: background-color .12s ease, border-color .12s ease; }
+  .doc-item, .ts { transition: background-color .12s ease, border-color .12s ease; }
 }
 `;
 
@@ -157,11 +142,8 @@ const CLIENT_JS = String.raw`
 
   var base = location.pathname.replace(/\/+$/, '');
   var api = base + '/api';
-  var body = document.body;
   var $ = function (id) { return document.getElementById(id); };
-  var loginView = $('login-view'), appView = $('app-view'), form = $('login-form'), pw = $('password');
-  var loginError = $('login-error'), unlockBtn = $('unlock-btn'), lockBtn = $('lock-btn'), search = $('search');
-  var networkBtn = $('network-btn'), networkForm = $('network-form');
+  var search = $('search');
   var list = $('doc-list'), listStatus = $('list-status'), detail = $('detail');
   var selectedId = null, searchTimer = 0, listSeq = 0, detailSeq = 0;
   var KINDS = { NOTEBOOK: 'Notebook', PDF: 'PDF', WHITEBOARD: 'Whiteboard', TYPED: 'Typed' };
@@ -201,96 +183,13 @@ const CLIENT_JS = String.raw`
     return api + '/docs/' + encodeURIComponent(docId) + '/files/' + encodeURIComponent(name);
   }
   function request(path) {
-    return fetch(api + path, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }).then(function (res) {
-      if (res.status === 401) { showLogin('Your session ended. Unlock again.'); throw new Error('unauthorized'); }
-      return res;
-    });
+    return fetch(api + path, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
   }
 
-  function showLogin(message) {
-    body.setAttribute('data-signed-in', 'false');
-    appView.hidden = true;
-    loginView.hidden = false;
-    list.textContent = '';
-    detail.textContent = '';
-    selectedId = null;
-    loginError.textContent = message || '';
-    loginError.hidden = !message;
-    pw.value = '';
-    pw.focus();
-  }
-  function showApp() {
-    body.setAttribute('data-signed-in', 'true');
-    loginView.hidden = true;
-    appView.hidden = false;
-    loginError.hidden = true;
-    showEmpty();
-    loadDocs(true);
-  }
   function showEmpty() {
     detail.textContent = '';
     detail.appendChild(el('p', 'empty', 'Select a document to read its notes, transcripts and files.'));
   }
-
-  form.addEventListener('submit', function (ev) {
-    ev.preventDefault();
-    var password = pw.value;
-    if (!password) {
-      loginError.textContent = 'Enter your password.';
-      loginError.hidden = false;
-      pw.focus();
-      return;
-    }
-    unlockBtn.disabled = true;
-    loginError.hidden = true;
-    networkBtn.hidden = true;
-    fetch(api + '/session', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ password: password })
-    }).then(function (res) {
-      // Only the vault's own JSON answer counts: a network proxy may answer with its own page.
-      var fromVault = !res.redirected && /application\/json/.test(res.headers.get('Content-Type') || '');
-      if (res.ok && fromVault) { pw.value = ''; showApp(); if (!narrow()) search.focus(); return; }
-      return res.json().catch(function () { return {}; }).then(function (data) {
-        // Say what came back, so a refusal by the vault and one by the network can be told apart.
-        var msg = fromVault
-          ? 'Something went wrong (' + res.status + (data && data.error ? ' ' + data.error : '') + '). Try again.'
-          : 'Your network stopped the sign-in (HTTP ' + res.status + '). It may want you to confirm this site first.';
-        // A network that asks people to confirm a site can only show that step as a page.
-        networkBtn.hidden = fromVault;
-        if (res.status === 401) msg = 'That password is not right.';
-        if (res.status === 429) {
-          var min = Math.max(1, Math.ceil((data.retryAfterSeconds || 60) / 60));
-          msg = 'Too many attempts. Try again in ' + plural(min, 'minute', 'minutes') + '.';
-        }
-        loginError.textContent = msg;
-        loginError.hidden = false;
-        pw.select();
-        pw.focus();
-      });
-    }).catch(function () {
-      loginError.textContent = 'Could not reach the vault. Check your connection.';
-      loginError.hidden = false;
-    }).then(function () { unlockBtn.disabled = false; });
-  });
-
-  networkBtn.addEventListener('click', function () {
-    // An empty, ordinary form post to the sign-in address, opened as a page: the network shows its
-    // own confirmation there; afterwards the vault sends the browser back to this page.
-    networkForm.action = api + '/session';
-    networkForm.submit();
-  });
-
-  lockBtn.addEventListener('click', function () {
-    lockBtn.disabled = true;
-    fetch(api + '/logout', { method: 'POST', credentials: 'same-origin' }).catch(function () {}).then(function () {
-      lockBtn.disabled = false;
-      try { history.replaceState(null, '', base); } catch (e) {}
-      showLogin();
-    });
-  });
 
   search.addEventListener('input', function () {
     clearTimeout(searchTimer);
@@ -315,7 +214,7 @@ const CLIENT_JS = String.raw`
         if (m) selectDoc(m[1], false);
       }
     }).catch(function (e) {
-      if (seq === listSeq && e.message !== 'unauthorized') listStatus.textContent = 'Could not load documents.';
+      if (seq === listSeq) listStatus.textContent = 'Could not load documents.';
     }).then(function () { if (seq === listSeq) list.removeAttribute('aria-busy'); });
   }
 
@@ -366,7 +265,7 @@ const CLIENT_JS = String.raw`
       renderDetail(doc);
       if (fromUser && narrow()) { detail.focus({ preventScroll: true }); detail.scrollIntoView({ block: 'start' }); }
     }).catch(function (e) {
-      if (seq !== detailSeq || e.message === 'unauthorized') return;
+      if (seq !== detailSeq) return;
       detail.textContent = '';
       detail.appendChild(el('p', 'empty', 'Could not load this document.'));
     }).then(function () { if (seq === detailSeq) detail.removeAttribute('aria-busy'); });
@@ -507,8 +406,8 @@ const CLIENT_JS = String.raw`
     else { audio.addEventListener('loadedmetadata', go, { once: true }); audio.load(); }
   }
 
-  if (body.getAttribute('data-signed-in') === 'true') { showEmpty(); loadDocs(true); }
-  else pw.focus();
+  showEmpty();
+  loadDocs(true);
 })();
 `;
 
@@ -518,7 +417,7 @@ function clientScript(): string {
   return CLIENT_JS.split("__RENDER_MARKDOWN__").join(md).replace(/<\/(script)/gi, "<\\/$1").replace(/<!--/g, "<\\!--");
 }
 
-export function renderPage(nonce: string, signedIn: boolean): string {
+export function renderPage(nonce: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -534,35 +433,20 @@ export function renderPage(nonce: string, signedIn: boolean): string {
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&amp;display=swap">
 <style nonce="${nonce}">${CSS}</style>
 </head>
-<body data-signed-in="${signedIn ? "true" : "false"}">
-<main id="login-view" class="login"${signedIn ? " hidden" : ""}>
-  <div class="card">
-    <h1>${LOCK_ICON}<span>Notes</span></h1>
-    <form id="login-form" novalidate>
-      <label class="label" for="password">Password</label>
-      <input class="input" id="password" name="password" type="password" autocomplete="current-password" required spellcheck="false" aria-describedby="login-error">
-      <p id="login-error" class="error" role="alert" hidden></p>
-      <button id="unlock-btn" class="btn primary" type="submit">Unlock</button>
-    </form>
-    <button id="network-btn" class="btn" type="button" hidden>Open your network's confirmation page</button>
-    <form id="network-form" method="post" hidden></form>
-    <p class="hint">This private link is only for you.</p>
-    <noscript><p class="error">This page needs JavaScript.</p></noscript>
-  </div>
-</main>
-<div id="app-view" class="app"${signedIn ? "" : " hidden"}>
+<body>
+<div id="app-view" class="app">
   <header class="topbar">
-    <h1 class="brand">${LOCK_ICON}<span>Your Pit Box · Notes</span></h1>
+    <h1 class="brand">${NOTES_ICON}<span>Your Pit Box · Notes</span></h1>
     <div class="search" role="search">
       <label class="visually-hidden" for="search">Search notes and transcripts</label>
       <input class="input" id="search" type="search" placeholder="Search notes and transcripts" autocomplete="off" spellcheck="false">
     </div>
-    <button id="lock-btn" class="btn" type="button">Lock</button>
   </header>
   <div class="layout">
     <nav class="list-pane" aria-label="Synced documents">
       <p id="list-status" class="list-status" role="status" aria-live="polite"></p>
       <ul id="doc-list" class="doc-list"></ul>
+      <noscript><p class="list-status">This page needs JavaScript.</p></noscript>
     </nav>
     <main id="detail" class="detail" tabindex="-1"></main>
   </div>

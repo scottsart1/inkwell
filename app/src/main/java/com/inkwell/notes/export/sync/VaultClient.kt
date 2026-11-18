@@ -13,7 +13,10 @@ import okhttp3.Response
 import java.io.File
 import java.io.IOException
 
-/** Where the vault password and the cached session live (SecretStore in the app, memory in tests). */
+/**
+ * Where the cached session lives (SecretStore in the app, memory in tests). The vault no longer
+ * has a password; [password] is only what an earlier version saved, sent along if still there.
+ */
 interface VaultCredentials {
     fun password(): String?
     fun session(): VaultSession?
@@ -21,8 +24,9 @@ interface VaultCredentials {
 }
 
 /**
- * HTTP client for the notes vault (docs/VAULT_API.md). Logs in with the password from
- * [credentials], caches the bearer token, and on a `401` logs in again exactly once.
+ * HTTP client for the notes vault (docs/VAULT_API.md). The vault has no password: `api/session`
+ * accepts anything and nothing checks the token, but the client still asks for one and sends it,
+ * so it works with every version of the vault. On a `401` it logs in again exactly once.
  * Never logs or puts into exception messages the link, password, token or any body.
  */
 class VaultClient(
@@ -59,7 +63,7 @@ class VaultClient(
         }
     }
 
-    /** Logs in with the stored password and caches the session. */
+    /** Opens a session (with a saved password, if any) and caches it. */
     suspend fun refreshSession(): VaultSession = loginLock.withLock { freshLogin() }
 
     /** `GET api/ping` (authorised); returns the vault's display name. */
@@ -170,8 +174,7 @@ class VaultClient(
     /** Caller holds [loginLock]. */
     private suspend fun freshLogin(): VaultSession {
         credentials.saveSession(null)
-        val password = credentials.password()?.takeIf { it.isNotEmpty() } ?: throw VaultException.MissingPassword()
-        val session = login(password)
+        val session = login(credentials.password().orEmpty())
         credentials.saveSession(session)
         return session
     }

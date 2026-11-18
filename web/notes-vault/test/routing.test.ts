@@ -37,15 +37,10 @@ describe("routing outside the private link", () => {
     });
   }
 
-  it("a wrong link is a 404 even with a valid token and for POST", async () => {
+  it("a wrong link is a 404 even with a token and for POST", async () => {
     const t = await token();
     await expectPlain404(await call(`${ORIGIN}/notes/wrong-link-id/api/docs`, { headers: bearer(t) }));
-    await expectPlain404(
-      await call(`${ORIGIN}/notes/wrong-link-id/api/session`, {
-        method: "POST",
-        body: JSON.stringify({ password: env.NOTES_PASSWORD }),
-      }),
-    );
+    await expectPlain404(await call(`${ORIGIN}/notes/wrong-link-id/api/session`, { method: "POST", body: "{}" }));
   });
 
   it("everything is a 404 when NOTES_LINK_ID is not configured", async () => {
@@ -59,9 +54,8 @@ describe("routing outside the private link", () => {
     await expectPlain404(await call(`${BASE}/apix`));
   });
 
-  it("unknown API routes under the link need auth, then 404 as JSON", async () => {
-    expect((await call(`${BASE}/api/nope`)).status).toBe(401);
-    const res = await call(`${BASE}/api/nope`, { headers: bearer(await token()) });
+  it("unknown API routes under the link are a 404 as JSON", async () => {
+    const res = await call(`${BASE}/api/nope`);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "not_found" });
   });
@@ -76,111 +70,35 @@ describe("routing outside the private link", () => {
 });
 
 describe("ping", () => {
-  it("returns the vault name with a token", async () => {
-    const res = await call("/api/ping", { headers: bearer(await token()) });
+  it("returns the vault name, with or without a token", async () => {
+    expect((await call("/api/ping", { headers: bearer(await token()) })).status).toBe(200);
+    const res = await call("/api/ping");
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toMatch(/^application\/json/);
     expect(await res.json()).toEqual({ ok: true, name: "Your Pit Box · Notes" });
-  });
-
-  it("is 401 without a token", async () => {
-    const res = await call("/api/ping");
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: "unauthorized" });
   });
 });
 
 describe("the plain /notes entry", () => {
   for (const path of ["/notes", "/notes/"]) {
-    it(`GET ${path} serves the locked page, without the link in it`, async () => {
+    it(`GET ${path} serves the notes page, without the link in it`, async () => {
       const res = await call(ORIGIN + path);
       expect(res.status).toBe(200);
       expect(res.headers.get("Content-Type")).toMatch(/^text\/html/);
       const html = await res.text();
-      expect(html).toContain('id="login-view"');
+      expect(html).toContain('id="app-view"');
+      expect(html).not.toContain('id="login-view"');
       expect(html).not.toContain(LINK_ID);
     });
   }
 
-  it("its API needs a session", async () => {
-    expect((await call(`${ORIGIN}/notes/api/ping`)).status).toBe(401);
-    expect((await call(`${ORIGIN}/notes/api/docs`)).status).toBe(401);
-  });
-
-  it("the password signs in there and the cookie works on both entries", async () => {
-    const res = await call(`${ORIGIN}/notes/api/session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "CF-Connecting-IP": "10.200.0.1" },
-      body: JSON.stringify({ password: env.NOTES_PASSWORD }),
-    });
-    expect(res.status).toBe(200);
-    const setCookie = res.headers.get("Set-Cookie") ?? "";
-    expect(setCookie).toContain("Path=/notes;");
-    const cookie = setCookie.split(";")[0] as string;
-    expect((await call(`${ORIGIN}/notes/api/docs`, { headers: { Cookie: cookie } })).status).toBe(200);
-    expect((await call(`${BASE}/api/docs`, { headers: { Cookie: cookie } })).status).toBe(200);
-    const page = await (await call(`${ORIGIN}/notes`, { headers: { Cookie: cookie } })).text();
-    expect(page).toContain('data-signed-in="true"');
-  });
-
-  it("a wrong password is refused there too", async () => {
-    const res = await call(`${ORIGIN}/notes/api/session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "CF-Connecting-IP": "10.200.0.2" },
-      body: JSON.stringify({ password: "not-the-password" }),
-    });
-    expect(res.status).toBe(401);
+  it("its API is open, with no password", async () => {
+    expect((await call(`${ORIGIN}/notes/api/ping`)).status).toBe(200);
+    expect((await call(`${ORIGIN}/notes/api/docs`)).status).toBe(200);
   });
 
   it("a bearer token from the app works on the plain API", async () => {
     const t = await token();
     expect((await call(`${ORIGIN}/notes/api/docs`, { headers: bearer(t) })).status).toBe(200);
-  });
-});
-
-describe("page visits to the sign-in and sign-out addresses", () => {
-  const html = { Accept: "text/html,application/xhtml+xml" };
-
-  it("a page load of /notes/api/session goes back to /notes, signing no one in", async () => {
-    for (const path of ["/notes/api/session", "/notes/api/logout"]) {
-      const res = await call(ORIGIN + path, { headers: html, redirect: "manual" });
-      expect(res.status, path).toBe(303);
-      expect(res.headers.get("Location")).toBe("/notes");
-      expect(res.headers.get("Set-Cookie")).toBeNull();
-    }
-  });
-
-  it("under the private link it goes back to the private page", async () => {
-    const res = await call(`${BASE}/api/session`, { headers: html, redirect: "manual" });
-    expect(res.status).toBe(303);
-    expect(res.headers.get("Location")).toBe(`/notes/${LINK_ID}`);
-  });
-
-  it("the empty network-confirmation form post goes back too", async () => {
-    const res = await call(`${ORIGIN}/notes/api/session`, {
-      method: "POST",
-      headers: { ...html, "Content-Type": "application/x-www-form-urlencoded" },
-      body: "",
-      redirect: "manual",
-    });
-    expect(res.status).toBe(303);
-    expect(res.headers.get("Location")).toBe("/notes");
-    expect(res.headers.get("Set-Cookie")).toBeNull();
-  });
-
-  it("the page's and the app's JSON requests are unchanged", async () => {
-    expect((await call(`${ORIGIN}/notes/api/session`)).status).toBe(405);
-    const res = await call(`${ORIGIN}/notes/api/session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json", "CF-Connecting-IP": "10.200.0.9" },
-      body: JSON.stringify({ password: env.NOTES_PASSWORD }),
-    });
-    expect(res.status).toBe(200);
-  });
-
-  it("the page carries the network-confirmation button and form", async () => {
-    const page = await (await call(`${ORIGIN}/notes`)).text();
-    expect(page).toMatch(/<button id="network-btn"[^>]*hidden/);
-    expect(page).toMatch(/<form id="network-form" method="post" hidden>/);
   });
 });
