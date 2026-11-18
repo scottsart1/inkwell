@@ -161,6 +161,7 @@ const CLIENT_JS = String.raw`
   var $ = function (id) { return document.getElementById(id); };
   var loginView = $('login-view'), appView = $('app-view'), form = $('login-form'), pw = $('password');
   var loginError = $('login-error'), unlockBtn = $('unlock-btn'), lockBtn = $('lock-btn'), search = $('search');
+  var networkBtn = $('network-btn'), networkForm = $('network-form');
   var list = $('doc-list'), listStatus = $('list-status'), detail = $('detail');
   var selectedId = null, searchTimer = 0, listSeq = 0, detailSeq = 0;
   var KINDS = { NOTEBOOK: 'Notebook', PDF: 'PDF', WHITEBOARD: 'Whiteboard', TYPED: 'Typed' };
@@ -242,19 +243,23 @@ const CLIENT_JS = String.raw`
     }
     unlockBtn.disabled = true;
     loginError.hidden = true;
+    networkBtn.hidden = true;
     fetch(api + '/session', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify({ password: password })
     }).then(function (res) {
-      if (res.ok) { pw.value = ''; showApp(); if (!narrow()) search.focus(); return; }
-      var fromVault = /application\/json/.test(res.headers.get('Content-Type') || '');
+      // Only the vault's own JSON answer counts: a network proxy may answer with its own page.
+      var fromVault = !res.redirected && /application\/json/.test(res.headers.get('Content-Type') || '');
+      if (res.ok && fromVault) { pw.value = ''; showApp(); if (!narrow()) search.focus(); return; }
       return res.json().catch(function () { return {}; }).then(function (data) {
         // Say what came back, so a refusal by the vault and one by the network can be told apart.
         var msg = fromVault
           ? 'Something went wrong (' + res.status + (data && data.error ? ' ' + data.error : '') + '). Try again.'
-          : 'Your network did not let the sign-in through (HTTP ' + res.status + ').';
+          : 'Your network stopped the sign-in (HTTP ' + res.status + '). It may want you to confirm this site first.';
+        // A network that asks people to confirm a site can only show that step as a page.
+        networkBtn.hidden = fromVault;
         if (res.status === 401) msg = 'That password is not right.';
         if (res.status === 429) {
           var min = Math.max(1, Math.ceil((data.retryAfterSeconds || 60) / 60));
@@ -269,6 +274,13 @@ const CLIENT_JS = String.raw`
       loginError.textContent = 'Could not reach the vault. Check your connection.';
       loginError.hidden = false;
     }).then(function () { unlockBtn.disabled = false; });
+  });
+
+  networkBtn.addEventListener('click', function () {
+    // An empty, ordinary form post to the sign-in address, opened as a page: the network shows its
+    // own confirmation there; afterwards the vault sends the browser back to this page.
+    networkForm.action = api + '/session';
+    networkForm.submit();
   });
 
   lockBtn.addEventListener('click', function () {
@@ -532,6 +544,8 @@ export function renderPage(nonce: string, signedIn: boolean): string {
       <p id="login-error" class="error" role="alert" hidden></p>
       <button id="unlock-btn" class="btn primary" type="submit">Unlock</button>
     </form>
+    <button id="network-btn" class="btn" type="button" hidden>Open your network's confirmation page</button>
+    <form id="network-form" method="post" hidden></form>
     <p class="hint">This private link is only for you.</p>
     <noscript><p class="error">This page needs JavaScript.</p></noscript>
   </div>
