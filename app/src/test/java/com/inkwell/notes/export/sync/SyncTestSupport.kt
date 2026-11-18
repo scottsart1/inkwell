@@ -400,7 +400,8 @@ class FakeDrive : DriveApi {
 /** A vault double that follows docs/VAULT_API.md closely enough to drive the client. */
 class FakeVault(
     val linkId: String = "Lk7xQ2pLmn0",
-    val password: String = "correct horse",
+    /** What `api/session` accepts (the real vault accepts anything; this double still checks). */
+    @Volatile var password: String = "correct horse",
 ) : AutoCloseable {
     val server = MockWebServer()
     val requests = CopyOnWriteArrayList<RecordedRequest>()

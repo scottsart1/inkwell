@@ -3,15 +3,15 @@ package com.inkwell.notes.export.sync
 import okhttp3.OkHttpClient
 
 /**
- * "Test connection" of the notes vault: log in with the given password, then ping with the new
- * token. Failures come back as [SyncCheckFailure] with a message ready to show.
+ * "Test connection" of the notes vault: open a session (the vault has no password; [password]
+ * may be empty), then ping with the new token. Failures come back as [SyncCheckFailure] with a
+ * message ready to show.
  */
 object VaultConnectionTest {
     /** [movedTo]: the vault answered from another host of its site, which the link should now use. */
     data class Success(val message: String, val session: VaultSession, val movedTo: VaultEndpoint? = null)
 
     suspend fun run(http: OkHttpClient, endpoint: VaultEndpoint, password: String, clock: () -> Long = System::currentTimeMillis): Result<Success> {
-        if (password.isEmpty()) return Result.failure(SyncCheckFailure("Enter the vault password."))
         val credentials = object : VaultCredentials {
             @Volatile var current: VaultSession? = null
             override fun password(): String = password

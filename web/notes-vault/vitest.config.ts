@@ -14,8 +14,6 @@ export default defineConfig(async () => {
         miniflare: {
           bindings: {
             NOTES_LINK_ID: "test-link-id-0000-not-a-real-secret",
-            NOTES_PASSWORD: "test-password-not-real",
-            SESSION_SECRET: "test-session-secret-not-real-0123456789",
             TEST_MIGRATIONS: migrations,
           },
         },

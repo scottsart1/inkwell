@@ -161,13 +161,11 @@ class VaultClientTest {
     }
 
     @Test
-    fun `missing password is reported before any request`() = runBlocking {
-        try {
-            vault.client(MemoryCredentials(pw = null)).ping()
-            fail("expected MissingPassword")
-        } catch (e: VaultException.MissingPassword) {
-            assertTrue(vault.requests.isEmpty())
-        }
+    fun `with no saved password the client opens a session with an empty one`() = runBlocking {
+        vault.password = ""
+        assertEquals("Your Pit Box · Notes", vault.client(MemoryCredentials(pw = null)).ping())
+        assertEquals(listOf("POST /api/session", "GET /api/ping"), vault.calls())
+        assertEquals("""{"password":""}""", vault.requests.first().body.readUtf8())
     }
 
     @Test
@@ -356,9 +354,6 @@ class VaultClientTest {
 
         val notVault = VaultConnectionTest.run(FakeVault.httpClient(), VaultEndpoint.insecureForTests(vault.server.url("/notes/zzz")), "correct horse")
         assertTrue(notVault.exceptionOrNull()!!.message!!.contains("404"))
-
-        val empty = VaultConnectionTest.run(FakeVault.httpClient(), vault.endpoint, "")
-        assertEquals("Enter the vault password.", empty.exceptionOrNull()!!.message)
 
         val endpoint = vault.endpoint
         vault.close()

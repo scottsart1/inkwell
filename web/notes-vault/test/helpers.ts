@@ -3,7 +3,6 @@ import type { Env } from "../src/env";
 import { handle } from "../src/index";
 
 export const LINK_ID = env.NOTES_LINK_ID as string;
-export const PASSWORD = env.NOTES_PASSWORD as string;
 export const ORIGIN = "https://vault.example.test";
 export const BASE = `${ORIGIN}/notes/${LINK_ID}`;
 
@@ -27,28 +26,22 @@ export function uid(prefix = "doc"): string {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
-export function loginRequest(password: string, ip: string, e: Env = env): Promise<Response> {
+/** `POST api/session` as older app versions send it (the vault has no password; anything goes). */
+export function sessionRequest(password: string, e: Env = env): Promise<Response> {
   return call("/api/session", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+    headers: { "Content-Type": "application/json", "CF-Connecting-IP": uniqueIp() },
     body: JSON.stringify({ password }),
     env: e,
   });
 }
 
-export async function login(e: Env = env): Promise<{ token: string; cookie: string; expiresAt: number }> {
-  const res = await loginRequest(e.NOTES_PASSWORD as string, uniqueIp(), e);
-  if (res.status !== 200) throw new Error(`login failed: ${res.status}`);
-  const data = (await res.json()) as { token: string; expiresAt: number };
-  return { token: data.token, expiresAt: data.expiresAt, cookie: `nv_session=${data.token}` };
-}
-
 export const bearer = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
 
 let cachedToken: string | null = null;
-/** A valid bearer token for the default test secrets (cached per test file). */
+/** The token an older app gets from `api/session` and sends along (nothing checks it). */
 export async function token(): Promise<string> {
-  if (!cachedToken) cachedToken = (await login()).token;
+  if (!cachedToken) cachedToken = ((await (await sessionRequest("anything")).json()) as { token: string }).token;
   return cachedToken;
 }
 

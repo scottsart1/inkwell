@@ -1,46 +1,47 @@
 # Notes vault API (yourpitbox.com/notes)
 
-The private notes vault is a Cloudflare Worker ([`web/notes-vault`](../web/notes-vault/README.md),
+The notes vault is a Cloudflare Worker ([`web/notes-vault`](../web/notes-vault/README.md),
 deployed with `npm run deploy` there) mounted on `yourpitbox.com/notes/*`. The Android app's `SyncManager` pushes notes,
 transcripts and audio to it when the user picks "Notes vault" as a destination in Settings ›
-Storage, sync & backup, next to a folder and Google Drive. The settings take the private link
-(`https://yourpitbox.com/notes/<LINK_ID>`) and the password; the password and the session token
-live only in `SecretStore` (Keystore-encrypted), never in settings, backups or exports.
+Storage, sync & backup, next to a folder and Google Drive. The settings take only the link.
+
+**The vault has no password.** Anyone who opens `https://yourpitbox.com/notes` can read,
+download, change and delete everything in it. Earlier versions had one; the owner removed it
+(app version 1.2.7).
 
 ## Addressing
 
 ```
-BASE = https://yourpitbox.com/notes/<LINK_ID>
+BASE = https://yourpitbox.com/notes            (the plain address)
+BASE = https://yourpitbox.com/notes/<LINK_ID>  (the older "special link"; same page and API)
 ```
 
-`LINK_ID` is a long random secret (the "special link"); the app uses this base. The same
-page and API are also served at the plain address `https://yourpitbox.com/notes` (API under
-`/notes/api/...`) for browsers on networks that block unfamiliar random-looking paths; there
-the password, with its per-address lockout, is the only guard. Any other path gets a plain
-404. Neither value is stored in this repository: both are Worker secrets (`NOTES_LINK_ID`,
-`NOTES_PASSWORD`). The session cookie has `Path=/notes`, so it works on both entries.
+`LINK_ID` is a Worker secret (`NOTES_LINK_ID`), not stored in this repository; without it the
+Worker answers 404 to everything. Any path other than these two entries gets a plain 404.
 
-The Worker never redirects, and the app does not follow redirects, so the bearer token cannot
-travel to another server. The one exception is a site moving between `www.host` and `host`.
-The zone sends `www.yourpitbox.com/*` to the apex with a 301. When a permanent redirect (301
-or 308) keeps the scheme, port and path and only adds or drops a leading `www.`, the app
-follows it once and saves the new link (`VaultRedirect`). It shows any other redirect as an
-error.
+The Worker never redirects, and the app does not follow redirects. The one exception is a site
+moving between `www.host` and `host`. The zone sends `www.yourpitbox.com/*` to the apex with a
+301. When a permanent redirect (301 or 308) keeps the scheme, port and path and only adds or
+drops a leading `www.`, the app follows it once and saves the new link (`VaultRedirect`). It
+shows any other redirect as an error.
 
-## Authentication
+## Sessions (kept for compatibility)
 
-`POST {BASE}/api/session` with JSON `{"password": "..."}`
+`POST {BASE}/api/session`, any body (older apps send `{"password": "..."}`)
 
-- `200 {"token": "<opaque>", "expiresAt": <epoch ms>}`, and a `Set-Cookie` (HttpOnly,
-  Secure, SameSite=Strict, Path=/notes/<LINK_ID>) for the web UI.
-- `401 {"error": "invalid_password"}`
-- `429 {"error": "locked", "retryAfterSeconds": n}` after repeated failures (per IP, rolling).
+- `200 {"token": "open", "expiresAt": <epoch ms, a year ahead>}`, always. It also clears the
+  `nv_session` cookie earlier versions set.
+- `403 {"error": "bad_origin"}` when posted from another website.
 
-Every other `/api/*` call needs `Authorization: Bearer <token>` (app) or the cookie (web).
-Tokens are HMAC-signed, expire after 30 days, and are invalidated when the password changes.
-`401 {"error":"unauthorized"}` means "log in again".
+Nothing checks the token: every other `/api/*` call works with or without
+`Authorization: Bearer <token>`. Older vaults answered `401 invalid_password`,
+`401 unauthorized` and `429 locked`; the app still understands those.
 
-`POST {BASE}/api/logout` clears the cookie.
+`POST {BASE}/api/logout` answers `{"ok":true}` and clears the old cookie.
+
+State-changing requests (PUT, DELETE, POST) that carry an `Origin` header for another site get
+`403 {"error":"bad_origin"}`, so another website open in the same browser cannot change the
+vault through it. Requests without `Origin` (the app, scripts) and from the page itself work.
 
 ## Endpoints
 
@@ -87,5 +88,6 @@ app can retry safely. Files the app uploads by convention: `notes.pdf`, `notes.m
 
 ## Storage
 
-- Cloudflare D1 database `notes-vault`: tables `docs`, `transcripts`, `files`, `login_attempts`.
+- Cloudflare D1 database `notes-vault`: tables `docs`, `transcripts`, `files` (and `login_attempts`,
+  left from the password era and no longer used).
 - Cloudflare R2 bucket `notes-vault-files`: file bodies at `<docId>/<name>`.

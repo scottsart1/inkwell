@@ -17,7 +17,6 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -35,24 +34,24 @@ import java.util.UUID
  * Skipped unless the environment names it:
  *
  * ```
- * cd web/notes-vault && npm ci && printf 'NOTES_LINK_ID=devlink\nNOTES_PASSWORD=pw\nSESSION_SECRET=s\n' > .dev.vars
+ * cd web/notes-vault && npm ci && printf 'NOTES_LINK_ID=devlink\n' > .dev.vars
  * npx wrangler d1 migrations apply notes-vault --local && npx wrangler dev --local --port 8787
- * INKWELL_VAULT_DEV_URL=http://127.0.0.1:8787/notes/devlink INKWELL_VAULT_DEV_PASSWORD=pw \
+ * INKWELL_VAULT_DEV_URL=http://127.0.0.1:8787/notes/devlink \
  *   ./gradlew :app:testDebugUnitTest --tests '*VaultDevServerTest*'
  * ```
  *
- * The lockout test locks the dev server's address for 15 minutes; clear it with
- * `npx wrangler d1 execute notes-vault --local --command 'DELETE FROM login_attempts'`.
+ * The vault has no password: any (or no) saved password is accepted.
  */
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class VaultDevServerTest {
     private val devUrl: String? = System.getenv("INKWELL_VAULT_DEV_URL")
+    /** Whatever an earlier version may have saved; the vault ignores it. */
     private val devPassword: String? = System.getenv("INKWELL_VAULT_DEV_PASSWORD")
     private val tmp: File = Files.createTempDirectory("vault-dev").toFile()
     private val http = FakeVault.httpClient()
 
     private fun endpoint(): VaultEndpoint {
-        assumeTrue("set INKWELL_VAULT_DEV_URL and INKWELL_VAULT_DEV_PASSWORD to run against wrangler dev", devUrl != null && devPassword != null)
+        assumeTrue("set INKWELL_VAULT_DEV_URL to run against wrangler dev", devUrl != null)
         return VaultEndpoint.insecureForTests(devUrl!!.toHttpUrl())
     }
 
@@ -78,18 +77,15 @@ class VaultDevServerTest {
     }
 
     @Test
-    fun `t1 login ping and wrong password`() = runBlocking {
+    fun `t1 any password or none opens the vault`() = runBlocking {
         val c = client()
-        val session = c.login(devPassword!!)
+        val session = c.login(devPassword.orEmpty())
         assertTrue(session.token.isNotBlank())
         assertTrue(session.expiresAt > System.currentTimeMillis() + 29L * 24 * 3600 * 1000)
         assertEquals("Your Pit Box · Notes", c.ping())
-        try {
-            client().login("definitely-not-$devPassword")
-            fail("expected WrongPassword")
-        } catch (e: VaultException.WrongPassword) {
-            // 401 {"error":"invalid_password"} from the real Worker
-        }
+        // No password at all, or a wrong one: the vault has none, so both work.
+        assertEquals("Your Pit Box · Notes", client(password = null).ping())
+        assertEquals("Your Pit Box · Notes", client(password = "anything").ping())
         // Works whether the dev URL is the plain /notes address or a private link.
         val wrongLink = VaultEndpoint.insecureForTests(endpoint().base.newBuilder().encodedPath("/notes/nope").build())
         try {
@@ -98,7 +94,7 @@ class VaultDevServerTest {
         } catch (e: VaultException.NotAVault) {
             // plain 404
         }
-        val test = VaultConnectionTest.run(http, endpoint(), devPassword)
+        val test = VaultConnectionTest.run(http, endpoint(), "")
         assertEquals("Connected to Your Pit Box · Notes", test.getOrThrow().message)
     }
 
@@ -200,31 +196,6 @@ class VaultDevServerTest {
         val names = det["files"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }.toSet()
         assertEquals(setOf("notes.pdf", "notes.md", "rec_${rec.id}.m4a"), names)
         assertEquals(d.modifiedAt.coerceAtLeast(h.now), h.source.synced[d.id])
-    }
-
-    @Test
-    fun `t9 repeated wrong passwords lock the vault and the client reports the wait`() = runBlocking {
-        var locked: VaultException.Locked? = null
-        for (i in 0 until 12) {
-            try {
-                client().login("wrong-$i")
-            } catch (e: VaultException.WrongPassword) {
-                continue
-            } catch (e: VaultException.Locked) {
-                locked = e
-                break
-            }
-        }
-        assertTrue("expected a 429 within 12 attempts", locked != null)
-        assertTrue(locked!!.retryAfterSeconds in 1..(15 * 60))
-        assertTrue(locked.blocksVault)
-        // Even the right password is refused while locked.
-        try {
-            client().login(devPassword!!)
-            fail("expected Locked")
-        } catch (e: VaultException.Locked) {
-            assertFalse(e.message!!.contains(devPassword!!))
-        }
     }
 
     private fun kotlinx.serialization.json.JsonPrimitive.contentOrNull(): String? = if (this is kotlinx.serialization.json.JsonNull) null else content

@@ -1,9 +1,9 @@
-# Private notes vault for yourpitbox.com/notes (see README.md).
-# Secrets (never in this file): NOTES_LINK_ID, NOTES_PASSWORD, SESSION_SECRET.
+# Notes vault for yourpitbox.com/notes (see README.md).
+# Secret (never in this file): NOTES_LINK_ID. The vault has no password.
 name = "notes-vault"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
-# Only reachable through yourpitbox.com/notes/<link>; no workers.dev or preview URLs.
+# Only reachable through yourpitbox.com/notes; no workers.dev or preview URLs.
 workers_dev = false
 preview_urls = false
 # The page embeds the Markdown renderer's source (Function#toString); keep bundled

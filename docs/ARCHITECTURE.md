@@ -64,7 +64,7 @@ Rules for contracts:
 - AI output never silently overwrites notes; insertion is always an explicit user action.
 - Long work (OCR, AI, export, sync, transcription) runs off the main thread / in WorkManager
   and never blocks writing.
-- API keys and the vault password live only in `SecretStore`; never log them, never put them in
+- API keys live only in `SecretStore`; never log them, never put them in
   settings JSON, exports, or shared files. Google Drive access tokens come from Google Play services on demand
   and are never stored by Inkwell (see `docs/GOOGLE_DRIVE.md`).
 - Voiceprints (speaker embeddings, reference clips) are biometric: encrypted, under
@@ -107,13 +107,14 @@ one-time Google Cloud registration is described in `docs/GOOGLE_DRIVE.md`.
 ## Notes vault
 
 `OutputTarget.VAULT` copies notes (metadata, text, `notes.pdf`, `notes.md`), transcripts and
-audio to the private notes vault, a Cloudflare Worker at `https://yourpitbox.com/notes/<LINK_ID>`
-(deployed separately; protocol in `docs/VAULT_API.md`). `DestinationPrefs.vaultUrl` holds the
-private link; the password and session token live only in `SecretStore`, and `VaultPassword`
-ties the password to the link it was entered for. `VaultClient` speaks the API over OkHttp
-(never follows a redirect except the site moving between `www.host` and `host`), and
-`SyncEngine` holds vault uploads after a refused password or a server lockout so the app never
-locks the user out.
+audio to the notes vault, a Cloudflare Worker at `https://yourpitbox.com/notes` (deployed
+separately; protocol in `docs/VAULT_API.md`). The vault has **no password**: anyone who opens the
+address can read, change and delete what is in it. `DestinationPrefs.vaultUrl` holds the link;
+the session token lives in `SecretStore`, and the settings screen removes a password an earlier
+version saved (`VaultPassword.forget`). `VaultClient` speaks the API over OkHttp (never follows
+a redirect except the site moving between `www.host` and `host`); it still opens a session,
+which the vault grants to anyone, so it works with every vault version. `SyncEngine` still holds
+vault uploads after a refused password or a lockout (only an older vault can answer that way).
 
 ## Email to work
 
